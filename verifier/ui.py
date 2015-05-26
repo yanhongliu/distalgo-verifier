@@ -1,18 +1,27 @@
 import argparse
 import os
+import sys
 
-from .parser import Parser
+from .parser import Parser, ParseError
 from .lexer import Lexer
 from . import utils
 from . import scope
-from . import typeinferencer
+#from . import types
+from . import translator
+
+DEBUG=True
 
 def dpyast_from_file(infile):
     node = None
     parser = Parser()
     with open(infile, "r") as f:
         source = f.read()
-        node = parser.parse(source, infile)
+
+        try:
+            node = parser.parse(source, infile)
+        except ParseError as err:
+            print(err)
+            sys.exit(1)
 
     return node
 
@@ -28,9 +37,15 @@ def dpyfile_to_tla(infile, outfile=None):
         purename = filename
 
     scopes = scope.ScopeBuilder.run(dpyast)
-    typeinferencer.TypeInferencer.run(dpyast)
 
-    print(scopes)
+    if DEBUG:
+        for _, s in scopes.items():
+            print(s)
+
+    # types.TypeInferencer.run(dpyast, scopes)
+
+    trans = translator.Translator(scopes)
+    trans.run()
 
 def main():
     """Main entry point when invoking compiler module from command line."""

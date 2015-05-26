@@ -11,7 +11,7 @@ class ParseError(Exception):
         self.text = None
 
     def __str__(self):
-        return "{0}:{1}|{2}".format(self.filename, self.lineno, self.text)
+        return "{0}:{1}:{3}\n{2}".format(self.filename, self.lineno, self.text, self.string)
 
 
 class Parser(object):
@@ -203,6 +203,7 @@ class Parser(object):
                       | assert_stmt
         """
         p[0] = p[1]
+        p[0].lineno = self.lineno
 
     def p_expr_stmt_1(self, p):
         """expr_stmt : testlist_star_expr augassign yield_expr
@@ -308,7 +309,7 @@ class Parser(object):
     def p_relative_dot_list_opt(self, p):
         """relative_dot_list_opt : relative_dot_list
                                  |"""
-        p[0] = p[1] if len(p) == 2 else None
+        p[0] = p[1] if len(p) == 2 else []
 
     def p_relative_dot_list(self, p):
         """relative_dot_list : ELLIPSIS
@@ -327,7 +328,7 @@ class Parser(object):
 
     def p_import_from_1(self, p):
         """import_from : FROM import_from_path IMPORT STAR"""
-        p[0] = ast.ImportStmt("*", p[2])
+        p[0] = ast.ImportStmt([ast.ImportName('*')], p[2])
 
     def p_import_from_2(self, p):
         """import_from : FROM import_from_path IMPORT LPAR import_as_names RPAR"""
@@ -340,7 +341,7 @@ class Parser(object):
     def p_import_as_name(self, p):
         """import_as_name : NAME
                           | NAME AS NAME"""
-        p[0] = ast.ImportName(p[1], None if len(p) == 2 else p[2])
+        p[0] = ast.ImportName([p[1]], None if len(p) == 2 else p[2])
 
     def p_dotted_as_name(self, p):
         """dotted_as_name : dotted_name
@@ -369,11 +370,11 @@ class Parser(object):
 
     def p_global_stmt(self, p):
         """global_stmt : GLOBAL name_star"""
-        p[0] = ast.GlobalStmt(p[1])
+        p[0] = ast.GlobalStmt(p[2])
 
     def p_nonlocal_stmt(self, p):
         """nonlocal_stmt : NONLOCAL name_star"""
-        p[0] = ast.NonLocalStmt(p[1])
+        p[0] = ast.NonLocalStmt(p[2])
 
     def p_name_star(self, p):
         """name_star : NAME
@@ -396,6 +397,7 @@ class Parser(object):
                          | classdef
                          | decorated"""
         p[0] = p[1]
+        p[0].lineno = self.lineno
 
     def p_if_stmt(self, p):
         """if_stmt : IF test COLON suite elif_list else_opt"""
@@ -553,7 +555,7 @@ class Parser(object):
 
     def p_atom_5(self, p):
         """atom : NUMBER"""
-        p[0] = ast.Number(p[1])
+        p[0] = ast.Number(p[1][0])
 
     def p_atom_6(self, p):
         """atom : TRUE"""
@@ -586,7 +588,7 @@ class Parser(object):
         p[0] = ast.CompForExpr([p[1]], p[2])
 
     def p_testlist_comp_2(self, p):
-        """testlist_comp : test_star_expr_star"""
+        """testlist_comp : testlist_star_expr"""
         p[0] = p[1]
 
     def p_atom_trailer_star_1(self, p):
@@ -603,7 +605,7 @@ class Parser(object):
         # expand trailer
         """atom_trailer_star : atom_trailer_star LPAR arglist RPAR
                              | atom_trailer_star LPAR RPAR"""
-        p[0] = ast.ApplyExpr(p[1], p[3] if len(p) == 5 else [])
+        p[0] = ast.ApplyExpr(p[1], p[3] if len(p) == 5 else ast.ArgList([]))
 
     def p_atom_trailer_star_4(self, p):
         # expand trailer
@@ -718,10 +720,15 @@ class Parser(object):
                                |"""
         p[0] = [] if len(p) == 1 else [p[2]] + p[3]
 
-    def p_argument(self, p):
-        """argument : test comp_for_opt
-                    | test EQUAL test"""
-        p[0] = ast.Argument(None, p[1] if p[2] is None else ast.CompForExpr([p[1]], p[2])) if len(p) == 3 else ast.Argument(p[1], p[3])
+    def p_argument_1(self, p):
+        """argument : test comp_for_opt"""
+        p[0] = ast.Argument(None, p[1] if p[2] is None else ast.CompForExpr([p[1]], p[2]))
+
+    def p_argument_2(self, p):
+        """argument : test EQUAL test"""
+        if not isinstance(p[1], ast.Name):
+            raise ParseError("keyword can't be an expression", self.lineno)
+        p[0] = ast.Argument(p[1].name, p[3])
 
     def p_comp_iter(self, p):
         """comp_iter : comp_for
@@ -761,6 +768,9 @@ class Parser(object):
         else:
             self._parse_error('At end of input', '')
 
+    @property
+    def lineno(self):
+        return self.lexer.lexer.lineno
 
     def parse(self, source, filename="<string>"):
         # There is a bug in PLY 2.3; it doesn't like the empty string.

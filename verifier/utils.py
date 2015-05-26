@@ -143,7 +143,7 @@ class Logger(object):
         if self.is_debug:
             print(msg)
 
-class ObjectDictionary(dict):
+class ObjectDictionary(collections.OrderedDict):
     class Wrapper(object):
         def __init__(self, obj):
             self.obj = obj
@@ -157,6 +157,7 @@ class ObjectDictionary(dict):
             return False
 
     def __init__(self, *args, **kwds):
+        super().__init__()
         self.__update(*args, **kwds)
 
     def __setitem__(self, key, value):
@@ -196,7 +197,7 @@ class ObjectDictionary(dict):
 
     def items(self):
         for (k, v) in super().items():
-            yield (k.obj, v)
+            yield (k, v)
 
     @_recursive_repr()
     def __repr__(self):
