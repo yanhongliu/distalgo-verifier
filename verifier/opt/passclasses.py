@@ -37,7 +37,7 @@ class BasicBlockPass(FunctionPass):
         super().__init__()
 
     def run_on_function(self, function):
-        for block in function.blocks:
+        for block in function.basicblocks:
             self.run_on_block(block)
 
     def run_on_block(self, block):

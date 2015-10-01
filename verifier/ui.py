@@ -21,6 +21,7 @@ def dpyfile_to_tla(infile, outfile=None):
         pass_manager.add_pass(BuildCFGPass())
         pass_manager.add_pass(SSAPass())
         pass_manager.add_pass(SimplifyCFGPass())
+        pass_manager.add_pass(DCE())
         pass_manager.add_pass(DumpFunction())
         pass_manager.run(modules)
 

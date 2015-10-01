@@ -26,6 +26,7 @@ ir = [
     'Return',
     'Integer',
     'Range',
+    'SubScript',
 ]
 
 __all__ = ir + ['BasicBlock', 'Module', 'Function']

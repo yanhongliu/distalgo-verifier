@@ -104,11 +104,13 @@ class ScopeTranslator(utils.NodeVisitor):
             if len(targets) == 1:
                 self.append_inst(Assign(targets[0], node.op, result))
         else:
-            #TODO
-            pass
-
-        #self.visit_one_value(node.target_list)
-        #self.append_inst(Assign())
+            for target in reversed(targets):
+                if isinstance(target, Tuple):
+                    for idx, element in enumerate(target.operands):
+                        self.append_inst(Assign(element, node.op,
+                                                SubScript(result, [Constant(idx)])))
+                else:
+                    self.append_inst(Assign(target, node.op, result))
 
     def visit_GlobalStmt(self, node):
         pass
@@ -399,6 +401,11 @@ class ScopeTranslator(utils.NodeVisitor):
     def visit_PropertyExpr(self, node: dast.PropertyExpr):
         result = self.visit(node.expr)
         return Property(result, node.name)
+
+    def visit_SubscriptExpr(self, node: dast.SubscriptExpr):
+        result = self.visit(node.expr)
+        subscripts = [self.visit(subscript) for subscript in node.subscripts]
+        return SubScript(result, subscripts)
 
 class Translator(object):
     def __init__(self):

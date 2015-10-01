@@ -50,7 +50,7 @@ class SSAPass(FunctionPass):
                 dom.dominates[n].add(b)
 
                 if n in b.pred:
-                    dom.immediate_dominated_by[b] = n
+                    dom.immediate_dominated_by[b] = n   
 
         for b in blocks:
             for n in dom.dominates[b]:

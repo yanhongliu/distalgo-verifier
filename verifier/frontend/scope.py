@@ -250,7 +250,7 @@ class ScopeBuilder(utils.NodeVisitor):
         for target in node.target_list:
             names = AssignNameFinder.run(target, self)
             for name in names:
-                self.assign_to_name(target.name)
+                self.assign_to_name(name)
 
     def visit_ImportStmt(self, node : dast.ImportStmt):
         for import_item in node.imported_as:

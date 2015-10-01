@@ -626,7 +626,7 @@ class Parser(object):
                          | subscript COMMA
                          | subscript COMMA subscriptlist"""
 
-        p[0] = p[1] if len(p) == 2 or len(p) == 3 else [p[1]] + p[3]
+        p[0] = [p[1]] if len(p) == 2 or len(p) == 3 else [p[1]] + p[3]
 
     def p_subscript_1(self, p):
         """subscript : test"""

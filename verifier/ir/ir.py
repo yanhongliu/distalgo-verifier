@@ -147,6 +147,11 @@ class Constant(Value):
     def __repr__(self):
         return "<{0} {1}>".format(self.__class__.__name__, repr(self.value))
 
+class SubScript(Instruction):
+    def __init__(self, value, subscript, block = None):
+        super().__init__(block)
+        self.set_operands([value] + subscript)
+
 class Property(Instruction):
     def __init__(self, value, name, block = None):
         super().__init__(block)
@@ -230,7 +235,7 @@ class IsEmpty(Instruction):
 class Return(Instruction):
     def __init__(self, expr, block = None):
         super().__init__(block)
-        self.expr = expr
+        self.set_operands([expr])
 
 class Function(Value):
     def __init__(self, module, ast_node, scope):
