@@ -1,4 +1,4 @@
-from . import utils
+from .. import utils
 from . import dast
 import enum
 
@@ -82,6 +82,13 @@ class Scope(object):
                 raise SemanticsError("{0} is nonlocal and global".format(name))
         else:
             self.names[name] = typ
+
+    def lookup_name(self, name):
+        if name in self.names:
+            return self.names[name], self
+        if self.parent is not None:
+            return self.parent.lookup_name(name)
+        return None
 
     def __repr__(self):
         return "Scope(ast:{0} names:{1})".format(self.ast, self.names)
@@ -187,6 +194,10 @@ class ScopeBuilder(utils.NodeVisitor):
         self.current_scope = None
         self.top_scope = None
 
+    def init_top_scope(self):
+        self.top_scope = self.current_scope
+        self.top_scope.add_name('int')
+        self.top_scope.add_name('len')
 
     def visit_scope(self, node):
         nonlocal_names, global_names = GlobalAndNonLocalFinder.run(node)
@@ -197,7 +208,7 @@ class ScopeBuilder(utils.NodeVisitor):
             # set the top-level scope for global name
             if len(self.scopes) == 1:
                 assert(self.top_scope is None)
-                self.top_scope = self.current_scope
+                self.init_top_scope()
             self.generic_visit(node)
 
     def assign_to_name(self, name):

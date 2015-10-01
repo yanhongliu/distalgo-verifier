@@ -226,7 +226,11 @@ class Parser(object):
 
     def p_testlist_star_expr(self, p):
         """testlist_star_expr : test_star_expr_star COMMA
-                              | test_star_expr_star"""
+                              | test_star_expr_star
+           testlist : test_star COMMA
+                    | test_star
+           exprlist : expr_star_expr_star COMMA
+                    | expr_star_expr_star"""
         if len(p[1]) == 1 and len(p) == 2:
             p[0] = p[1][0]
         else:
@@ -239,7 +243,11 @@ class Parser(object):
 
     def p_test_star_expr_star(self, p):
         """test_star_expr_star : test_star_expr
-                               | test_star_expr_star COMMA test_star_expr"""
+                               | test_star_expr_star COMMA test_star_expr
+           test_star : test
+                     | test_star COMMA test
+           expr_star_expr_star : expr_star_expr
+                               | expr_star_expr_star COMMA expr_star_expr"""
         p[0] = [p[1]] if len(p) == 2 else p[1] + [p[3]]
 
     def p_augassign(self, p):
@@ -285,7 +293,7 @@ class Parser(object):
     def p_return_stmt(self, p):
         """return_stmt : RETURN testlist
                        | RETURN"""
-        p[0] = ast.ReturnStmt([] if len(p) == 2 else p[2])
+        p[0] = ast.ReturnStmt(None if len(p) == 2 else p[2])
 
     def p_yield_stmt(self, p):
         """yield_stmt : yield_expr"""
@@ -642,15 +650,6 @@ class Parser(object):
         """sliceop : COLON test
                    | COLON"""
         p[0] = p[2] if len(p) == 3 else None
-
-    def p_testlist(self, p):
-        """testlist : test
-                    | test COMMA
-                    | test COMMA testlist
-           exprlist : expr_star_expr
-                    | expr_star_expr COMMA
-                    | expr_star_expr COMMA exprlist"""
-        p[0] = p[1] if len(p) == 2 or len(p) == 3 else [p[1]] + p[3]
 
     def p_expr_star_expr(self, p):
         """expr_star_expr : expr

@@ -2,50 +2,30 @@ import argparse
 import os
 import sys
 
-from .parser import Parser, ParseError
-from .lexer import Lexer
-from . import utils
-from . import scope
-#from . import types
-from . import translator
+from .frontend import Parser, Translator
+from .opt import *
+from .target.tlaplus import CodeGen
 
 DEBUG=True
 
-def dpyast_from_file(infile):
-    node = None
-    parser = Parser()
+def dpyfile_to_tla(infile, outfile=None):
+    filename = os.path.basename(infile)
     with open(infile, "r") as f:
         source = f.read()
+        parser = Parser()
+        ast = parser.parse(source, infile)
+        translator = Translator()
+        modules = [translator.run(filename, ast)]
+        pass_manager = PassManager()
+        # add pass
+        pass_manager.add_pass(BuildCFGPass())
+        pass_manager.add_pass(SSAPass())
+        pass_manager.add_pass(SimplifyCFGPass())
+        pass_manager.add_pass(DumpFunction())
+        pass_manager.run(modules)
 
-        try:
-            node = parser.parse(source, infile)
-        except ParseError as err:
-            print(err)
-            sys.exit(1)
-
-    return node
-
-def dpyfile_to_tla(infile, outfile=None):
-    dpyast = dpyast_from_file(infile)
-    filename = os.path.basename(infile)
-
-    purename, _, suffix = filename.rpartition(".")
-    if len(purename) == 0:
-        purename = suffix
-        suffix = ""
-    if suffix != "da":
-        purename = filename
-
-    scopes = scope.ScopeBuilder.run(dpyast)
-
-    if DEBUG:
-        for _, s in scopes.items():
-            print(s)
-
-    # types.TypeInferencer.run(dpyast, scopes)
-
-    trans = translator.Translator(scopes)
-    trans.run()
+        codegen = CodeGen()
+        codegen.run(modules, outfile)
 
 def main():
     """Main entry point when invoking compiler module from command line."""

@@ -224,10 +224,7 @@ class FuncDef(AstNode):
         self.body = body
 
     def __repr__(self):
-        return "<FuncDef {0} {1} {2} {3}>".format(self.name, self.args, self.ret_type)
-
-    def __repr__(self):
-        return "<FuncDef {0}>".format(self.name)
+        return "<FuncDef {0} {1} {2}>".format(self.name, self.args, self.ret_type)
 
 class TypedArgList(AstNode):
     _fields = ["args", "vargs", "args2", "kwargs"]
@@ -290,6 +287,7 @@ class CompIf(AstNode):
     def __init__(self, cond, sub):
         self.cond = cond
         self.sub = sub
+
 class Lambda(AstNode):
     _fields = ["args", "body"]
     def __init__(self, args, body):
