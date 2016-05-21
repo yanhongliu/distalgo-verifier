@@ -43,6 +43,8 @@ class CodeGen(object):
             for module in modules:
                 self.tla_module = TlaModule(module.name, [])
                 # only scan through
+
+                print(send_action().to_tla())
                 for function in module.functions:
                     if isinstance(function.ast_node, dast.Program):
                         self.gen_program(function)
@@ -58,8 +60,6 @@ class CodeGen(object):
     def gen_program(self, function):
         if not CodeGen.is_simple_program(function):
             raise NotImplementedError()
-
-        print(send_action().to_tla())
 
     @staticmethod
     def is_simple_program(function : ir.Function):
@@ -87,7 +87,7 @@ class CodeGen(object):
 
         for i in process.basicblocks[0].ir:
             if isinstance(i, ir.Assign) and i.expr.ast_node.name == "setup":
-                self.gen_init_function(i.expr)
+                pass # self.gen_init_function(i.expr)
         for i in process.basicblocks[0].ir:
             if isinstance(i, ir.Assign) and i.expr.scope.type == ScopeType.General:
                 self.gen_entry_function(i.expr)

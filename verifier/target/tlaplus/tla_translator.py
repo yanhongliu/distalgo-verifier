@@ -113,7 +113,7 @@ class RWTracker(object):
         return len(self.write_names[name]) == 1
 
     def has_more_read(self, name):
-        return name in self.read_names and len(self.read_names[name]) > 1
+        return name in self.read_names and len(self.read_names[name]) >= 1
 
     def get_ssa_name(self, name, read = False):
         if name in self.write_names:
@@ -128,7 +128,7 @@ class RWTracker(object):
         else:
             return apply_expr(name, "self")
 
-def translate_insts_simple_one_block(top_exprs, insts, skip_branch = True, next_name = None):
+def translate_insts_simple_one_block(top_exprs, insts, translator, skip_branch = True, next_name = None):
     exprs = top_exprs
     rwtracker = RWTracker()
     for inst in insts:
@@ -146,6 +146,7 @@ def translate_insts_simple_one_block(top_exprs, insts, skip_branch = True, next_
 
         is_real_assign = rwtracker.is_real_assign(name)
         has_more_read = rwtracker.has_more_read(name)
+
         if is_real_assign:
             if has_more_read:
                 target_expr = rwtracker.get_ssa_name(name)
@@ -161,7 +162,7 @@ def translate_insts_simple_one_block(top_exprs, insts, skip_branch = True, next_
 
     for inst in insts:
         if isinstance(inst, ir.Assign):
-            expr = ExprTranslator.run(inst.expr, rwtracker)
+            expr = ExprTranslator.run(inst.expr, rwtracker, translator)
             if isinstance(inst.target, ir.IRName):
                 handle_assign(inst.target.name, expr)
             else:
@@ -173,8 +174,8 @@ def translate_insts_simple_one_block(top_exprs, insts, skip_branch = True, next_
                     handle_assign(var, val)
 
         elif isinstance(inst, ir.Send):
-            message = ExprTranslator.run(inst.value, rwtracker)
-            target = ExprTranslator.run(inst.to, rwtracker)
+            message = ExprTranslator.run(inst.value, rwtracker, translator)
+            target = ExprTranslator.run(inst.to, rwtracker, translator)
             exprs.append(TlaInstantiationExpr(TlaSymbol("Send"),
                                                 [TlaSymbol("self"), message,
                                                 target]))
@@ -209,8 +210,13 @@ class Action(object):
         self.next_name = next_name
 
     def from_end(self):
+
         ret_addr_name = self.block.function.scope.gen_name("ret_pc")
-        exprs = [self.check_pc(), except_expr_helper('pc', apply_expr(ret_addr_name, 'self'))]
+        exprs = [self.check_pc()]
+        if self.block.label == "end" and self.block.function.ast_node.name == "run":
+            exprs.append(except_expr_helper('atomic_barrier', TlaConstantExpr(-1)))
+        else:
+            exprs.append(except_expr_helper('pc', apply_expr(ret_addr_name, 'self')))
         self.tla = TlaDefinitionStmt(TlaSymbol(self.name), [TlaSymbol('self')], tla_and(exprs))
 
     def from_call(self, call: ir.Call):
@@ -232,7 +238,7 @@ class Action(object):
 
     def from_insts(self, insts):
         exprs = []
-        translate_insts_simple_one_block(exprs, insts, False)
+        translate_insts_simple_one_block(exprs, insts, False, self.next_name)
         exprs = [self.check_pc()] + exprs
         self.tla = TlaDefinitionStmt(TlaSymbol(self.name), [TlaSymbol('self')], tla_and(exprs))
 
@@ -250,8 +256,9 @@ class Action(object):
 
 class ExprTranslator(utils.NodeVisitor):
     _nodebaseclass = ir.Value
-    def __init__(self, rwtracker):
+    def __init__(self, rwtracker, translator):
         self.rwtracker = rwtracker
+        self.translator = translator
 
     def visit(self, node):
         result = super().visit(node)
@@ -285,8 +292,9 @@ class ExprTranslator(utils.NodeVisitor):
 
     def visit_Received(self, node : ir.Received):
         rcvd = apply_expr('rcvd', 'self')
-        constrains, freevar = PatternTranslator.run(node.pattern, TlaSymbol('_value'))
-        tla = tla_exists(tla_in(TlaSymbol('_value'), rcvd), tla_and(constrains))
+        temp = TlaSymbol(self.translator.get_tempname("_value"))
+        constrains, freevar = PatternTranslator.run(node.pattern, temp)
+        tla = tla_exists(tla_in(temp, rcvd), tla_and(constrains))
         return tla
 
     def visit_Append(self, node : ir.Append):
@@ -391,14 +399,14 @@ class PatternToType(utils.NodeVisitor):
     def visit_IRName(self, node: ir.IRName):
         return types.Unknown(node.origin_name)
 
-def translate_function_simple_one_block(top_exprs, block):
+def translate_function_simple_one_block(top_exprs, block, translator):
     insts = block.ir
     exprs = translate_insts_simple_one_block(top_exprs, insts, True)
     if len(insts) > 0 and isinstance(insts[-1], ir.CondBranch):
         last_inst = insts[-1]
         block1 = last_inst.target_block
         block2 = last_inst.target_block_alt
-        cond_expr = ExprTranslator.run(last_inst.condition, RWTracker())
+        cond_expr = ExprTranslator.run(last_inst.condition, RWTracker(), translator)
         exprs1 = []
         exprs2 = []
         exprs.append(TlaIfExpr(cond_expr, tla_and(exprs1), tla_and(exprs2)))
@@ -406,11 +414,21 @@ def translate_function_simple_one_block(top_exprs, block):
         translate_function_simple_one_block(exprs2, block2)
     else:
         if block.succ:
-            translate_function_simple_one_block(exprs, next(iter(block.succ)))
+            translate_function_simple_one_block(exprs, next(iter(block.succ)), translator)
     return exprs
 
 
 class Translator(object):
+    def __init__(self):
+        self.tempname = dict()
+
+    def get_tempname(self, name):
+        if name not in self.tempname:
+            self.tempname[name] = 0
+        self.tempname[name] += 1
+
+        return "{0}_{1}".format(name, self.tempname[name])
+
     # This is a version with more restriction, but easy to handle before we have SSA/phi node
     def check_translable_as_single_action_restricted(self, function):
         # Let's just reuse our implementation
@@ -555,7 +573,7 @@ class Translator(object):
                 freevar_def.append(TlaDefinitionStmt(TlaSymbol(var), [], val))
             handler_exprs = []
             full_predicate = TlaLetExpr(freevar_def, tla_and(handler_exprs))
-            translate_function_simple_one_block(handler_exprs, function.basicblocks[0])
+            translate_function_simple_one_block(handler_exprs, function.basicblocks[0], self)
 
             next_exprs = []
             exprs.append(TlaIfExpr(tla_and(constrains), full_predicate, tla_and(next_exprs)))

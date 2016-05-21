@@ -167,12 +167,12 @@ class TlaIfExpr(TlaAST):
 
     def to_tla(self, indent=0):
         indent_string = " " * indent
-        return ("""IF   {1}\n"""
+        return ("""\n{0}IF   {1}\n"""
                 """{0}THEN {2}\n"""
                 """{0}ELSE {3}""").format(indent_string,
-                                          self.condition.to_tla(indent + 4),
-                                          self.ifexpr.to_tla(indent + 4),
-                                          self.elseexpr.to_tla(indent + 4))
+                                          self.condition.to_tla(indent + 5),
+                                          self.ifexpr.to_tla(indent + 5),
+                                          self.elseexpr.to_tla(indent + 5))
 
 class TlaCase(TlaAST):
     _fields = ["caseexpr", "expr"]
@@ -287,7 +287,7 @@ class TlaExceptExpr(TlaAST):
         self.exprs = exprs
         
     def to_tla(self, indent=0):
-        return "[{0} EXCEPT {1}]".format(self.origin.to_tla(), ", ".join([expr.to_tla() for expr in self.exprs]))
+        return "[{0} EXCEPT {1}]".format(self.origin.to_tla(), ", ".join([expr.to_tla(indent) for expr in self.exprs]))
 
 class TlaLetExpr(TlaAST):
     _fields = ["definitions", "expr"]
