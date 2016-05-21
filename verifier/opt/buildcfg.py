@@ -30,8 +30,8 @@ class BuildCFGPass(FunctionPass):
                 if isinstance(branch_ir, Return):
                     block.add_succ(endblock)
                 elif isinstance(branch_ir, CondBranch):
-                    block.add_succ(blocks[idx + 1])
                     block.add_succ(branch_ir.target_block)
+                    block.add_succ(branch_ir.target_block_alt)
                 else:
                     block.add_succ(branch_ir.target_block)
             else:

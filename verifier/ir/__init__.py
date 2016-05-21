@@ -1,7 +1,8 @@
 from .ir import *
-from .module import Module
 
 ir = [
+    'Value',
+    'Use',
     'Instruction',
     'Label',
     'Variable',
@@ -27,6 +28,14 @@ ir = [
     'Integer',
     'Range',
     'SubScript',
+    'Set',
+    'List',
+    'Received',
+    'ProcessId',
+    'RandomSelect',
+    'Quantifier',
+    'LogicOp',
+    'Append',
 ]
 
-__all__ = ir + ['BasicBlock', 'Module', 'Function']
+__all__ = ir + ['BasicBlock', 'Module', 'Function', 'IRName']

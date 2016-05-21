@@ -8,6 +8,10 @@ from verifier.ir import *
 def argument_template(*items):
     return {item : idx for idx, item in enumerate(items)}
 
+def maybe_has_side_effect(node):
+    # FIXME
+    return False
+
 class BlockSetter(object):
     def __init__(self, translator, block):
         self.block = block
@@ -23,8 +27,9 @@ class BlockSetter(object):
 class ScopeTranslator(utils.NodeVisitor):
     _nodebaseclass = dast.AstNode
 
-    def __init__(self, function : Function):
+    def __init__(self, function : Function, functions : dict):
         self.function = function
+        self.functions = functions
         self.scope = function.scope
         self.node = function.ast_node
         self.tempvar_idx = 0
@@ -120,7 +125,8 @@ class ScopeTranslator(utils.NodeVisitor):
 
     def visit_ForStmt(self, node : dast.ForStmt):
         iter =  self.visit(node.iter)
-        forbody = self.new_block(self.new_label("for"))
+        for_cond = self.new_block(self.new_label("for"))
+        for_body = self.new_block(self.new_label("for_body"))
         iter_var = self.tempvar()
         target_var = self.visit(node.target)
         self.append_inst(Assign(iter_var, "=", iter))
@@ -129,11 +135,13 @@ class ScopeTranslator(utils.NodeVisitor):
         if node.elsebody is not None:
             elsebody = self.new_block(self.new_label("for_else"))
 
-        with BlockSetter(self, forbody):
-            self.append_inst(CondBranch(IsEmpty(iter_var), elsebody))
-            self.append_inst(Assign(target_var, "=", PopOneElement(iter_var)))
+        with BlockSetter(self, for_cond):
+            self.append_inst(CondBranch(IsEmpty(iter_var), elsebody, for_body))
+
+        with BlockSetter(self, for_body):
+            self.append_inst(Assign(Tuple([target_var, iter_var]), "=", PopOneElement(iter_var, Constant(0))))
             self.visit_one_value(node.body)
-            self.append_inst(Branch(forbody))
+            self.append_inst(Branch(for_cond))
 
         if node.elsebody is not None:
             with BlockSetter(self, elsebody):
@@ -142,48 +150,77 @@ class ScopeTranslator(utils.NodeVisitor):
         self.set_block(endblock)
 
     def visit_IfStmt(self, node : dast.IfStmt):
+        # block structure looks like this:
+        #           cond
+        #           |      \
+        #        if_block  elif cond-------\
+        #           |       |              else_block
+        #           |      elif_block      |
+        #           |      /              /
+        #           |     /        /------
+        #        endif_block
         cond = self.visit(node.cond)
-        ifbody = self.new_block(self.new_label("if"))
-        else_block = self.new_block(self.new_label("else"))
-        with BlockSetter(self, ifbody):
-            self.visit_one_value(node.branch)
+        if_block = self.new_block(self.new_label("if"))
+        endif_block = self.new_block(self.new_label("endif"))
 
-        self.set_block(else_block)
-        for elif_cond, elif_body in node.elif_list:
-            cond = self.visit(elif_cond)
-            new_else_block = self.new_block(self.new_label("else"))
+        # get a copy of the list
+        else_nodes = list(node.elif_list)
+        if node.elsebranch is not None:
+            else_nodes.append(dast.ElseIf(None, node.elsebranch))
+
+        if else_nodes:
+            else_block = self.new_block(self.new_label(if_block.label + "_else"))
+        else:
+            else_block = endif_block
+
+        self.append_inst(CondBranch(cond, if_block, else_block))
+        with BlockSetter(self, if_block):
+            self.visit_one_value(node.branch)
+            if else_block is not endif_block:
+                self.append_inst(Branch(endif_block))
+
+        while else_nodes:
+            # elif_cond will be None if it's else instead of elif
+            elif_node = else_nodes.pop(0)
+            elif_cond = elif_node.cond
+            elif_body = elif_node.branch
+            next_else_block = self.new_block(self.new_label(if_block.label + "_else")) if else_nodes else endif_block
+            if elif_cond is not None:
+                with BlockSetter(self, else_block):
+                    cond = self.visit(elif_cond)
+                    else_block = self.new_block(self.new_label(if_block.label + "_elif"))
+                    self.append_inst(CondBranch(cond, else_block, next_else_block))
+
+            # if cond holds, enter here
             with BlockSetter(self, else_block):
                 self.visit_one_value(elif_body)
+                if else_nodes:
+                    self.append_inst(Branch(endif_block))
+            # if cond not holds, enter here
+            else_block = next_else_block
 
-            else_block = new_else_block
-            self.set_block(else_block)
-
-        if node.elsebranch is not None:
-            new_else_block = self.new_block(self.new_label("else"))
-            with BlockSetter(self, else_block):
-                self.visit_one_value(new_else_block)
-
-            else_block = new_else_block
-            self.set_block(else_block)
+        self.set_block(endif_block)
 
     def visit_WhileStmt(self, node : dast.WhileStmt):
-        while_body = self.new_block(self.new_label("while"))
+        while_cond_body = self.new_block(self.new_label("while"))
+        while_body = self.new_block(self.new_label("while_body"))
         elsebody = endblock = self.new_block(self.new_label("while_end"))
         if node.elsebody is not None:
             elsebody = self.new_block(self.new_label("while_else"))
 
-        with BlockSetter(self, while_body):
+        with BlockSetter(self, while_cond_body):
             cond = self.visit(node.cond)
-            self.append_inst(CondBranch(UnaryOp("not", cond), elsebody))
+            self.append_inst(CondBranch(cond, while_body, elsebody))
+
+        with BlockSetter(self, while_body):
             self.visit_one_value(node.body)
-            self.append_inst(Branch(while_body))
+            self.append_inst(Branch(while_cond_body))
 
         if node.elsebody is not None:
             with BlockSetter(self, elsebody):
                 self.visit_one_value(node.elsebody)
 
         self.set_block(endblock)
-
 
     def visit_ReturnStmt(self, node : dast.ReturnStmt):
         value = Constant(None) if node.exprs is None else self.visit_one_value(node.exprs)
@@ -195,20 +232,45 @@ class ScopeTranslator(utils.NodeVisitor):
 
     def visit_scope(self, node):
         if node is self.node:
-            self.generic_visit(node)
+            self.visit_one_value(node.body)
+        else:
+            self.append_inst(Assign(Variable(node.name), "=", self.functions[node]))
 
     # don't cross the bonduary of scope
-    def visit_ClassDef(self, node):
+    def visit_ClassDef(self, node : dast.ClassDef):
+        # When a python class is defined, this need to be executed immediately.
+        if node is not self.node:
+            self.append_inst(Call(self.functions[node], [], None, [], None))
         self.visit_scope(node)
 
-    def visit_FuncDef(self, node):
+    def visit_FuncDef(self, node : dast.FuncDef):
+        if self.scope.type == sp.ScopeType.ReceiveHandler:
+            for arg in node.args.args:
+                if arg.name == 'msg':
+                    pattern = arg.value
+            self.function.msg_pattern = self.visit(pattern)
         self.visit_scope(node)
 
     def visit_IfElseExpr(self, node : dast.IfElseExpr):
+        # We convert it into a if else stmt like thing
         cond = self.visit(node.cond)
+        var = self.tempvar()
 
-        ifvalue = self.visit(node.ifvalue)
-        elsevalue = self.visit(node.elsevalue)
+        if_block = self.new_block(self.new_label("if"))
+        else_block = self.new_block(self.new_label("else"))
+        endif_block = self.new_block(self.new_label("endif"))
+        self.append_inst(CondBranch(cond, if_block, else_block))
+        with BlockSetter(self, if_block):
+            ifvalue = self.visit(node.ifvalue)
+            self.append_inst(Assign(var, "=", ifvalue))
+            self.append_inst(Branch(endif_block))
+        with BlockSetter(self, else_block):
+            elsevalue = self.visit(node.elsevalue)
+            self.append_inst(Assign(var, "=", elsevalue))
+
+        self.set_block(endif_block)
+        return var
+
 
     def visit_ArgList(self, node : dast.ArgList):
         print(node)
@@ -223,12 +285,59 @@ class ScopeTranslator(utils.NodeVisitor):
         right = self.visit(node.right)
         return BinaryOp(node.op, left, right)
 
+    def visit_LogicExpr(self, node : dast.LogicExpr):
+        if maybe_has_side_effect(node):
+            end_block = self.new_block(self.new_label(node.op + "_end"))
+            if_blocks = [self.new_block(self.new_label(node.op + "_if")) for _ in node.conds[:-1]]
+            tempvars = [self.tempvar() for _ in node.conds[:-1]]
+            else_blocks = [self.new_block(self.new_label(node.op + "_else")) for _ in node.conds[:-1]]
+            result = self.tempvar()
+            for idx, cond in enumerate(node.conds):
+                value = self.visit(cond)
+                if node.op == "and":
+                    if idx + 1 == len(node.conds):
+                        self.append_inst(Assign(result, "=", value))
+                        self.append_inst(Branch(end_block))
+                    else:
+                        self.append_inst(Assign(tempvars[idx], "=", value))
+                        self.append_inst(CondBranch(tempvars[idx], if_blocks[idx], else_blocks[idx]))
+                        self.set_block(if_blocks[idx])
+                else: # node.op == "or"
+                    if idx + 1 == len(node.conds):
+                        self.append_inst(Assign(result, "=", value))
+                        self.append_inst(Branch(end_block))
+                    else:
+                        self.append_inst(Assign(tempvars[idx], "=", value))
+                        self.append_inst(CondBranch(tempvars[idx], if_blocks[idx], else_blocks[idx]))
+                        self.set_block(if_blocks[idx])
+                        self.append_inst(Assign(result, "=", tempvars[idx]))
+                        self.append_inst(Branch(end_block))
+                        self.set_block(else_blocks[idx])
+            for idx, cond in enumerate(node.conds):
+                if node.op == "and" and idx + 1 < len(node.conds):
+                    self.set_block(else_blocks[idx])
+                    self.append_inst(Assign(result, "=", tempvars[idx]))
+                    self.append_inst(Branch(end_block))
+
+            self.set_block(end_block)
+
+            return result
+        else:
+            return LogicOp(node.op, self.visit_one_value(node.conds))
+
     def visit_UnaryExpr(self, node : dast.UnaryExpr):
         expr = self.visit(node.expr)
         return UnaryOp(node.op, expr)
 
     def visit_Boolean(self, node : dast.Boolean):
         return Constant(node.boolean)
+
+    def visit_CompListMaker(self, node : dast.CompListMaker):
+        if node.expr is None:
+            # empty list
+            return List([])
+        else:
+            raise NotImplementedError()
 
     def handle_send(self, node, args, vargs, args2, kwargs, kwarg):
         assert(kwargs is None)
@@ -258,6 +367,7 @@ class ScopeTranslator(utils.NodeVisitor):
         self.append_inst(Start(procs, arg if arg is not None else Constant(None)))
 
     def handle_setup(self, node, args, vargs, args2, kwargs, kwarg):
+        # print(args, vargs, args2, kwargs, kwarg)
         procs, arg = self.check_argument(argument_template('procs', 'args'), args, vargs, args2, kwargs, kwarg)
         if procs is None:
             raise SyntaxError("setup")
@@ -302,7 +412,7 @@ class ScopeTranslator(utils.NodeVisitor):
         return Integer(n)
 
     def handle_len(self, node, args, vargs, args2, kwargs, kwarg):
-        len = self.check_argument(argument_template('object'), args, vargs, args2, kwargs, kwarg)
+        len, = self.check_argument(argument_template('object'), args, vargs, args2, kwargs, kwarg)
         if len is None:
             raise SyntaxError("len")
         return Cardinality(len)
@@ -316,38 +426,45 @@ class ScopeTranslator(utils.NodeVisitor):
 
     def handle_quantifier(self, tp, node):
         kwarg = { arg.name : idx for idx, arg in enumerate(node.args.args) if arg.name is not None}
-        domain = node.args.args[0]
+        domain = node.args.args[0].value
+        if "has" in kwarg:
+            predicate = self.visit(node.args.args[kwarg['has']].value)
+        else:
+            predicate = Constant(True)
         if tp == "each":
-            # print(domain)
-            pass
+            return Quantifier(tp, self.visit(domain), predicate)
         elif tp == "some":
-            pass
+            return Quantifier(tp, self.visit(domain), predicate)
         else:
             raise NotImplementedError("Unknown Quantifier Type {0}".format(tp))
 
-        if "has" in kwarg:
-            predicate = self.handle_predicate(node.args.args[kwarg["has"]].value)
-        else:
-            predicate = Constant(True)
+    def handle_message_history(self, tp, node):
+        # TODO
+        pattern = self.visit(node.args.args[0].value)
+        return Received(pattern)
 
+    def handle_work(self, node, args, vargs, args2, kwargs, kwarg):
         return
 
     def visit_ApplyExpr(self, node : dast.ApplyExpr):
         if isinstance(node.expr, dast.Name):
             if node.expr.name == "each":
                 return self.handle_quantifier("each", node)
-            elif node.expr.name == "received":
-                return self.handle_received(node)
+            elif node.expr.name == "received" or node.expr.name == "sent":
+                return self.handle_message_history(node.expr.name, node)
             elif node.expr.name == "any":
                 return self.handle_quantifier("some", node)
             elif node.expr.name == "await":
-                await_block = self.new_block(self.new_label("await"))
+                await_cond_block = self.new_block(self.new_label("await"))
+                await_block = self.new_block(self.new_label("await_body"))
                 end_block = self.new_block(self.new_label("await_end"))
-                with BlockSetter(self, await_block):
+                with BlockSetter(self, await_cond_block):
                     value = self.visit(node.args.args[0].value)
-                    self.append_inst(CondBranch(value, end_block))
+                    self.append_inst(CondBranch(value, end_block, await_block))
+
+                with BlockSetter(self, await_block):
                     self.append_inst(Label("await"))
-                    self.append_inst(Branch(await_block))
+                    self.append_inst(Branch(await_cond_block))
                 self.set_block(end_block)
                 return
 
@@ -390,14 +507,6 @@ class ScopeTranslator(utils.NodeVisitor):
     def visit_Number(self, node: dast.Number):
         return Constant(node.number)
 
-    def visit_ClassDef(self, node : dast.ClassDef):
-        if node is self.node:
-            return self.visit_one_value(node.body)
-
-    def visit_FuncDef(self, node : dast.FuncDef):
-        if node is self.node:
-            return self.visit_one_value(node.body)
-
     def visit_PropertyExpr(self, node: dast.PropertyExpr):
         result = self.visit(node.expr)
         return Property(result, node.name)
@@ -407,17 +516,32 @@ class ScopeTranslator(utils.NodeVisitor):
         subscripts = [self.visit(subscript) for subscript in node.subscripts]
         return SubScript(result, subscripts)
 
+    def visit_EnumSetMaker(self, node: dast.EnumSetMaker):
+        result = self.visit_one_value(node.items)
+        return Set(result)
+
 class Translator(object):
     def __init__(self):
         pass
 
     def run(self, name, ast):
         self.scopes = sp.ScopeBuilder.run(ast)
+        #for scope in self.scopes.values():
+            #print(scope)
         module = Module(name)
 
+        functions = dict()
+
         for node, scope in self.scopes.items():
-            function = Function(module, node, scope)
-            ScopeTranslator.run(node, function)
+            args = []
+            if isinstance(node, dast.FuncDef):
+                for arg in node.args.args:
+                    args.append(Variable(arg.name))
+            function = Function(module, node, scope, args)
+            functions[node] = function
+
+        for node, function in functions.items():
+            ScopeTranslator.run(node, function, functions)
             module.add_function(function)
 
         return module

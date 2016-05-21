@@ -1,10 +1,15 @@
 from .passmanager import PassManager
-from .passclasses import FunctionPass
+from .passclasses import FunctionPass, ModulePass, iter_instructions
 from .buildcfg import BuildCFGPass
 from .ssa import SSAPass
 from .simplifycfg import SimplifyCFGPass
 from .dumpfunction import DumpFunction
-from .dce import DCE
+from .tagvariables import TagVariables, AssignTargetVisitor
+from .constantprop import ConstantProp
+from .typeanalysis import TypeAnalysis
+from .normalizepass import NormalizePass
+from .replacebuiltinfunction import ReplaceBuiltinFunctionPass
+from .inliner import Inliner
 
 __all__ = [
     "PassManager",
@@ -13,5 +18,13 @@ __all__ = [
     "SimplifyCFGPass",
     "FunctionPass",
     "DumpFunction",
-    "DCE",
+    "ConstantProp",
+    "TypeAnalysis",
+    "TagVariables",
+    "NormalizePass",
+    "ReplaceBuiltinFunctionPass",
+    "Inliner",
+    "AssignTargetVisitor",
+    "ModulePass",
+    "iter_instructions"
 ]

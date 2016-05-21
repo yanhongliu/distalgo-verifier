@@ -5,3 +5,5 @@ class Logger(object):
     def debug(self, msg):
         if self.is_debug:
             print(msg)
+
+default_logger = Logger()

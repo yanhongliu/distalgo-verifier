@@ -1,4 +1,5 @@
 import verifier.ir
+from functools import reduce
 
 def get_op_bind(n):
     def _get(o):
@@ -11,6 +12,8 @@ def set_op_bind(n):
     return _set
 
 class Value(object):
+    _fields = []
+
     def __init__(self):
         self.uses = set()
 
@@ -39,6 +42,8 @@ class Use(object):
         return hash((self.user, self.idx))
 
 class Instruction(Value):
+    _fields  = ["operands"]
+
     def __init__(self, block):
         super().__init__()
         assert block is None or block is BasicBlock
@@ -85,6 +90,36 @@ class Instruction(Value):
                 else:
                     op.uses.add(Use(idx, self))
 
+    def dominates(self, other, idom = None):
+        if self is other:
+            return True
+
+        if self.parent is not None:
+            if self.parent is other.parent:
+                block = self.parent
+                for inst in block.ir:
+                    if inst is self:
+                        return True
+                    elif inst is other:
+                        return False
+                return False
+
+            if self.parent.function is other.parent.function:
+                if idom is not None:
+                    block = other.parent
+                    while block in idom:
+                        if block is self.parent:
+                            return True
+                        if block is idom[block]:
+                            break
+                        block = idom[block]
+                return False
+
+            if self.parent.function.scope.is_parent_of(other.parent.function.scope):
+                return True
+
+        return False
+
     def repr_operands(self):
         return ", ".join(repr(op) for op in self.operands)
 
@@ -108,6 +143,9 @@ class Send(Instruction):
     def __init__(self, value, to, block = None):
         super().__init__(block)
         self.set_operands([value, to])
+
+    value = property(get_op_bind(0), set_op_bind(0))
+    to = property(get_op_bind(1), set_op_bind(1))
 
 # API, see api.py, accept dict, list, or pid
 class Start(Instruction):
@@ -135,9 +173,21 @@ class Tuple(Instruction):
         super().__init__(block)
         self.set_operands(items)
 
+class List(Instruction):
+    def __init__(self, items, block = None):
+        super().__init__(block)
+        self.set_operands(items)
+
 class Clock(Instruction):
     def __init__(self, block = None):
         super().__init__(block)
+
+class ProcessId(Instruction):
+    def __init__(self, block = None):
+        super().__init__(block)
+
+    def __repr__(self):
+        return "<{0}>".format(self.__class__.__name__)
 
 class Constant(Value):
     def __init__(self, value):
@@ -152,6 +202,13 @@ class SubScript(Instruction):
         super().__init__(block)
         self.set_operands([value] + subscript)
 
+    value = property(get_op_bind(0), set_op_bind(0))
+
+class Set(Instruction):
+    def __init__(self, items, block = None):
+        super().__init__(block)
+        self.set_operands(items)
+
 class Property(Instruction):
     def __init__(self, value, name, block = None):
         super().__init__(block)
@@ -160,6 +217,24 @@ class Property(Instruction):
 
     def __repr__(self):
         return "<{0} {1} [{2}]>".format(self.__class__.__name__, repr(self.name), self.repr_operands())
+
+class Received(Instruction):
+    def __init__(self, pattern, block = None):
+        super().__init__(block)
+        self.set_operands([pattern])
+    def __repr__(self):
+        return "<{0} {1}>".format(self.__class__.__name__, repr(self.pattern))
+
+    pattern = property(get_op_bind(0), set_op_bind(0))
+
+class LogicOp(Instruction):
+    def __init__(self, op, conds, block = None):
+        super().__init__(block)
+        self.op = op
+        self.set_operands(conds)
+
+    def __repr__(self):
+        return "<{0} {1} [{2}]>".format(self.__class__.__name__, repr(self.op), self.repr_operands())
 
 class BinaryOp(Instruction):
     def __init__(self, op, left, right, block = None):
@@ -170,6 +245,9 @@ class BinaryOp(Instruction):
     def __repr__(self):
         return "<{0} {1} [{2}]>".format(self.__class__.__name__, repr(self.op), self.repr_operands())
 
+    left = property(get_op_bind(0), set_op_bind(0))
+    right = property(get_op_bind(1), set_op_bind(1))
+
 class UnaryOp(Instruction):
     def __init__(self, op, expr, block = None):
         super().__init__(block)
@@ -178,6 +256,8 @@ class UnaryOp(Instruction):
 
     def __repr__(self):
         return "<{0} {1} [{2}]>".format(self.__class__.__name__, repr(self.op), self.repr_operands())
+
+    expr = property(get_op_bind(0), set_op_bind(0))
 
 class Assign(Instruction):
     def __init__(self, target, op, expr, block = None):
@@ -188,17 +268,38 @@ class Assign(Instruction):
     def __repr__(self):
         return "<{0} {1} [{2}]>".format(self.__class__.__name__, repr(self.op), self.repr_operands())
 
+    target = property(get_op_bind(0), set_op_bind(0))
+    expr = property(get_op_bind(1), set_op_bind(1))
+
 class Call(Instruction):
     def __init__(self, func, args, vargs, args2, kwargs, block = None):
         super().__init__(block)
-        self.set_operands([func, args, vargs, args2, kwargs])
+        ops = [func] + args
+        if vargs is not None:
+            self.vargs_idx = len(ops)
+            ops.append(vargs)
+        else:
+            self.vargs_idx = -1
+
+        ops += args2
+        if kwargs is not None:
+            self.kwargs_idx = len(ops)
+            ops.append(kwargs)
+        else:
+            self.kwargs_idx = -1
+
+        self.set_operands(ops)
+
+    func = property(get_op_bind(0), set_op_bind(0))
 
 class CondBranch(Instruction):
-    def __init__(self, cond, target_block, block = None):
+    def __init__(self, cond, target_block, target_block2, block = None):
         super().__init__(block)
-        self.set_operands([cond, target_block])
+        self.set_operands([cond, target_block, target_block2])
 
+    condition = property(get_op_bind(0), set_op_bind(0))
     target_block = property(get_op_bind(1), set_op_bind(1))
+    target_block_alt = property(get_op_bind(2), set_op_bind(2))
 
 class Branch(Instruction):
     def __init__(self, target_block, block = None):
@@ -208,6 +309,22 @@ class Branch(Instruction):
     target_block = property(get_op_bind(0), set_op_bind(0))
 
 class PopOneElement(Instruction):
+    def __init__(self, expr, index, block = None):
+        super().__init__(block)
+        self.set_operands([expr, index])
+
+    expr = property(get_op_bind(0), set_op_bind(0))
+    index = property(get_op_bind(1), set_op_bind(1))
+
+class Append(Instruction):
+    def __init__(self, container, item, block = None):
+        super().__init__(block)
+        self.set_operands([container, item])
+
+    container = property(get_op_bind(0), set_op_bind(0))
+    elem = property(get_op_bind(1), set_op_bind(1))
+
+class RandomSelect(Instruction):
     def __init__(self, expr, block = None):
         super().__init__(block)
         self.set_operands([expr])
@@ -238,12 +355,13 @@ class Return(Instruction):
         self.set_operands([expr])
 
 class Function(Value):
-    def __init__(self, module, ast_node, scope):
+    def __init__(self, module, ast_node, scope, args):
         super().__init__()
         self.module = module
         self.ast_node = ast_node
         self.scope = scope
         self.basicblocks = []
+        self.args = []
 
     def remove_block(self, block_idx):
         block = self.basicblocks.pop(block_idx)
@@ -254,6 +372,55 @@ class Function(Value):
             succ.pred |= block.pred
             succ.pred.remove(block)
         block.function = None
+
+    def __repr__(self):
+        return "<{0} ({1} {2})>".format(self.__class__.__name__, self.ast_node.__class__.__name__,
+                                        self.ast_node.name if hasattr(self.ast_node, 'name') else '')
+
+    def dfs(self):
+        block = self.basicblocks[0]
+        stack = [block]
+        visited = set()
+        order = []
+
+        while stack:
+            block = stack.pop()
+            visited.add(block)
+            order.append(block)
+            new = [next_block for next_block in block.succ if next_block not in visited]
+            stack = new + stack
+
+        return order
+
+    def immediate_dominators(self):
+        idom = {self.basicblocks[0]: self.basicblocks[0]}
+
+        order = self.dfs()
+        dfn = {u: i for i, u in enumerate(reversed(order))}
+        order.pop(0)
+        # order.reverse()
+
+        def intersect(u, v):
+            while u != v:
+                while dfn[u] < dfn[v]:
+                    u = idom[u]
+                while dfn[u] > dfn[v]:
+                    v = idom[v]
+            return u
+
+        changed = True
+        while changed:
+            changed = False
+            for u in order:
+                new_idom = reduce(intersect, (v for v in u.pred if v in idom))
+                if u not in idom or idom[u] != new_idom:
+                    idom[u] = new_idom
+                    changed = True
+
+        return idom
+
+    def entry_label(self):
+        return self.scope.gen_name(self.basicblocks[0].label)
 
 class BasicBlock(Value):
     def __init__(self, function, label):
@@ -271,6 +438,17 @@ class BasicBlock(Value):
         self.ir.append(inst)
         inst.parent = self
 
+    def replace_inst(self, inst_from, inst_to):
+        # FIXME, maybe more maintenance is required
+        for idx, inst in enumerate(self.ir):
+            if inst is inst_from:
+                self.ir[idx] = inst_to
+                inst_to.parent = self
+                return
+
+    def remove_inst(self, inst):
+        self.ir.remove(inst)
+
     def split(self, idx):
         new_block = BasicBlock(self.function, self.label + "_s")
         new_block.ir = self.ir[idx+1:]
@@ -282,9 +460,42 @@ class BasicBlock(Value):
         self.succ.add(b)
         b.pred.add(self)
 
+    def remove_succ(self, b):
+        assert isinstance(b, BasicBlock)
+        self.succ.remove(b)
+        b.pred.remove(self)
+
     def __repr__(self):
         return "<{0} {1}>".format(self.__class__.__name__, self.label)
 
+class Module(object):
+    def __init__(self, name):
+        self.name = name
+        self.functions = []
+
+    def add_function(self, func):
+        self.functions.append(func)
+
+class Quantifier(Instruction):
+    def __init__(self, op, domain, predicate, block=None):
+        super().__init__(block)
+        self.op = op
+        self.domain = domain
+        self.predicate = predicate
+        self.set_operands([domain, predicate])
+
+    def __repr__(self):
+        return "<{0} {1} {2} has={3}>".format(self.__class__.__name__, self.op, self.domain, self.predicate)
+
+class IRName(Value):
+    def __init__(self, name, origin_name, typ):
+        super().__init__()
+        self.name = name
+        self.origin_name = origin_name
+        self.name_type = typ
+
+    def __repr__(self):
+        return "<{0} {1}>".format(self.__class__.__name__, self.name)
 
 if __name__ == "__main__":
     parm1 = Constant(1)

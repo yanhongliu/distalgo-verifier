@@ -75,7 +75,7 @@ class Parser(object):
     def p_parameters(self, p):
         """parameters : LPAR typedargslist RPAR
                       | LPAR RPAR"""
-        p[0] = [] if len(p) == 3 else p[2]
+        p[0] = ast.TypedArgList([], None, [], None) if len(p) == 3 else p[2]
 
     def p_typedargslist(self, p):
         """typedargslist : typedargs_with_default typedargs_with_default_list
@@ -209,7 +209,7 @@ class Parser(object):
         """expr_stmt : testlist_star_expr augassign yield_expr
                      | testlist_star_expr augassign testlist
         """
-        p[0] = ast.ExprStmt(p[1], p[2], p[3])
+        p[0] = ast.ExprStmt([p[1]], p[2], p[3])
 
     def p_expr_stmt_2(self, p):
         """expr_stmt : testlist_star_expr equal_yield_expr_testlist_star_expr_star"""
@@ -324,7 +324,7 @@ class Parser(object):
                              | relative_dot_list ELLIPSIS"""
         p[0] = ["..."] if len(p) == 2 else p[1] + ["..."]
 
-    def p_relative_dot_list(self, p):
+    def p_relative_dot_list_2(self, p):
         """relative_dot_list : DOT
                              | relative_dot_list DOT"""
         p[0] = ["."] if len(p) == 2 else p[1] + ["."]
@@ -414,7 +414,7 @@ class Parser(object):
     def p_elif_list(self, p):
         """elif_list : ELIF test COLON suite elif_list
                      |"""
-        p[0] = [] if len(p) == 1 else [(p[2], p[4])] + p[5]
+        p[0] = [] if len(p) == 1 else [ast.ElseIf(p[2], p[4])] + p[5]
 
     def p_else_opt(self, p):
         """else_opt : ELSE COLON suite
@@ -471,7 +471,7 @@ class Parser(object):
     def p_and_test_list(self, p):
         """and_test_list : and_test
                          | and_test_list OR and_test"""
-        p[0] = [p[1]] if len(p) == 2 else p[1] + [p[2]]
+        p[0] = [p[1]] if len(p) == 2 else p[1] + [p[3]]
 
     def p_and_test(self, p):
         """and_test : not_test_list"""
@@ -480,7 +480,7 @@ class Parser(object):
     def p_not_test_list(self, p):
         """not_test_list : not_test
                          | not_test_list AND not_test"""
-        p[0] = [p[1]] if len(p) == 2 else p[1] + [p[2]]
+        p[0] = [p[1]] if len(p) == 2 else p[1] + [p[3]]
 
     def p_not_test(self, p):
         """not_test : NOT not_test
@@ -549,9 +549,17 @@ class Parser(object):
                 | LPAR testlist_comp RPAR"""
         p[0] = p[2]
 
+    def p_atom_1_1(self, p):
+        """atom : LPAR RPAR"""
+        p[0] = ast.TupleExpr([])
+
     def p_atom_2(self, p):
         """atom : LSQB testlist_comp RSQB"""
-        p[0] = p[2]
+        p[0] = ast.CompListMaker(p[2])
+
+    def p_atom_2_1(self, p):
+        """atom : LSQB RSQB"""
+        p[0] = ast.CompListMaker(None)
 
     def p_atom_3(self, p):
         """atom : LBRACE dictorsetmaker RBRACE"""

@@ -9,10 +9,10 @@ class AstNode(object):
         return "<{0}>".format(self.__class__.__name__)
 
 class Program(AstNode):
-    _fields=["stmts"]
+    _fields=["body"]
 
-    def __init__(self, stmts):
-        self.stmts = stmts
+    def __init__(self, body):
+        self.body = body
 
 class ExprStmt(AstNode):
     _fields=["target_list", "op", "value"]
@@ -41,6 +41,9 @@ class LogicExpr(AstNode):
     def __init__(self, op, conds):
         self.op = op
         self.conds = conds
+
+    def __repr__(self):
+        return "<LogicExpr {0} {1}>".format(self.op, self.conds)
 
 class UnaryExpr(AstNode):
     _fields = ["op", "expr"]
@@ -141,12 +144,18 @@ class AssertStmt(AstNode):
         self.expr = expr
 
 class IfStmt(AstNode):
-    _fields = ["cond", "branch"]
+    _fields = ["cond", "branch", 'elif_list', 'elsebranch']
     def __init__(self, cond, branch, elif_list, elsebranch):
         self.cond = cond
         self.branch = branch
         self.elif_list = elif_list
         self.elsebranch = elsebranch
+
+class ElseIf(AstNode):
+    _fields = ["cond", "branch"]
+    def __init__(self, cond, branch):
+        self.cond = cond
+        self.branch = branch
 
 class WhileStmt(AstNode):
     _fields = ["cond", "body", "elsebody"]
@@ -185,6 +194,11 @@ class EnumDictMaker(AstNode):
     _fields = ["items"]
     def __init__(self, items):
         self.items = items
+
+class CompListMaker(AstNode):
+    _fields = ["expr"]
+    def __init__(self, expr):
+        self.expr = expr
 
 class CompDictMaker(AstNode):
     _fields = ["key", "value", "comp"]

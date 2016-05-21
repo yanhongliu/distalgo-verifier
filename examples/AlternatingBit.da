@@ -1,0 +1,86 @@
+import random
+
+class Sender(process):
+    def setup(p, r, data):
+        self.sbit = 0
+        self.acked = False
+
+    def receive(msg= ('Ack', bit)):
+        if bit == sbit:
+            sbit = 1 - sbit
+            acked = True
+
+    def run():
+        while data:
+            d = data.pop(0)
+            acked = False
+            while not acked:
+                work()
+                send(('Send', d, sbit), to= p)
+                --SEND
+
+        send(('done',), to={p, r})
+
+class Receiver(process):
+    def setup(p, data):
+        self.rbit = 1
+        self.rdata = []
+
+    def receive(msg= ('Send', d, bit)):
+        if bit != rbit:
+            rbit = 1 - rbit
+            output(d)
+            rdata.append(d)
+
+    def run():
+        while not received(('done', )):
+            work()
+            send(('Ack', rbit), to= p)
+            --recv
+
+        assert data == rdata
+
+class LoseMsg(process):
+    def setup(s, r):
+        self.s2r = []
+        self.r2s = []
+
+    def receive(msg= ('Send', d, bit)):
+        s2r.append(('Send', d, bit))
+    def receive(msg= ('Ack', bit)):
+        r2s.append(('Ack', bit))
+
+    def run():
+        while True:
+            --lose
+            await(len(s2r) > 0 or len(r2s) > 0 or received(('done', )))
+
+            if received(('done',)):
+                break
+
+            #work()
+
+            action = random.choice(range(8))
+            if action == 0 and len(s2r) > 0:
+                s2r.pop(random.choice(range(len(s2r))))
+            elif action == 1 and len(r2s) > 0:
+                r2s.pop(random.choice(range(len(r2s))))
+            elif action % 2 == 0 and len(s2r) > 0:
+                msg = s2r.pop(0)
+                send(msg, to= r)
+            elif action % 2 == 1 and len(r2s) > 0:
+                msg = r2s.pop(0)
+                send(msg, to= s)
+
+def main():
+    s = new(Sender, num= 1)
+    r = new(Receiver, num= 1)
+    l = new(LoseMsg, num= 1)
+
+    data = list(range(10))
+
+    setup(s, (l, r, data))
+    setup(r, (l, data))
+    setup(l, (s, r))
+    print(s, r, l)
+    start(s | r | l)

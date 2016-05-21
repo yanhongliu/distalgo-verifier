@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 
+def iter_instructions(function):
+    for block in function.basicblocks:
+        for inst in block.ir:
+            yield inst
+
 class Pass(object):
     def __init__(self):
-        pass
+        self.pass_manager = None
 
     def init(self):
         pass

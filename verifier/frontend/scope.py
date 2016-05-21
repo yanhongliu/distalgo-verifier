@@ -39,13 +39,17 @@ class NameType(enum.Enum):
     Local = 1
     Global = 2
     NonLocal = 3
+    Process = 4
+    Pattern = 5
+    HandlerPattern = 6
 
 @enum.unique
 class ScopeType(enum.Enum):
     General = 1
-    Process = 2
-    ProcessSetup = 3
-    ReceiveHandler = 4
+    Main = 2
+    Process = 3
+    ProcessSetup = 4
+    ReceiveHandler = 5
 
 class Scope(object):
     def __init__(self, parent, ast, nonlocal_names : set, global_names : set):
@@ -65,6 +69,8 @@ class Scope(object):
                     self.type = ScopeType.ProcessSetup
                 elif ast.name == "receive":
                     self.type = ScopeType.ReceiveHandler
+            elif isinstance(parent.ast, dast.Program) and ast.name == "main":
+                self.type = ScopeType.Main
 
         for name in nonlocal_names:
             self.add_name(name, NameType.NonLocal)
@@ -90,8 +96,37 @@ class Scope(object):
             return self.parent.lookup_name(name)
         return None
 
+    def gen_name(self, name):
+        scope = self
+        result = ''
+        while not isinstance(scope.ast, dast.Program):
+            if scope.type == ScopeType.ReceiveHandler:
+                result = scope.ast.name + '_' + str(self.receive_handler_idx) + '_' + result
+            else:
+                result = scope.ast.name + '_' + result
+            scope = scope.parent
+
+        return result + name
+
     def __repr__(self):
         return "Scope(ast:{0} names:{1})".format(self.ast, self.names)
+
+    def get_process_scope(self):
+        scope = self
+        while scope is not None and scope.type != ScopeType.Process:
+            scope = scope.parent
+        return scope
+
+    def is_parent_of(self, other):
+        scope = other.parent
+        while scope is not self and scope is not None:
+            scope = scope.parent
+
+        if scope is self:
+            # FIXME closure
+            return True
+        else:
+            return False
 
 class Setter(object):
     def __init__(self, obj, field, value):
@@ -117,6 +152,9 @@ class Setter(object):
 class ScopeSetter(Setter):
     def __init__(self, builder, node, nonlocal_names = None, global_names = None):
         self.scope = Scope(builder.current_scope, node, nonlocal_names, global_names)
+        if self.scope.type == ScopeType.ReceiveHandler:
+            builder.receive_handler_idx += 1
+            self.scope.receive_handler_idx = builder.receive_handler_idx
         builder.scopes[node] = self.scope
         super().__init__(builder, "current_scope", self.scope)
 
@@ -167,16 +205,16 @@ class AssignNameFinder(utils.NodeVisitor):
     _result = "names"
     _nodebaseclass=dast.AstNode
 
-    def __init__(self, builder):
+    def __init__(self, scope):
         super().__init__()
         self.names = set()
-        self.builder = builder
+        self.scope = scope
 
     def visit(self, node):
-        if self.builder.current_scope.type == ScopeType.ProcessSetup and \
+        if self.scope.type == ScopeType.ProcessSetup and \
            isinstance(node, dast.PropertyExpr):
             if is_self(node.expr):
-                self.builder.current_scope.parent.add_name(node.name)
+                self.scope.parent.add_name(node.name, NameType.Process)
 
         if isinstance(node, dast.TupleExpr) or isinstance(node, dast.Name):
             super().visit(node)
@@ -198,6 +236,8 @@ class ScopeBuilder(utils.NodeVisitor):
         self.top_scope = self.current_scope
         self.top_scope.add_name('int')
         self.top_scope.add_name('len')
+        self.top_scope.add_name('list')
+        self.top_scope.add_name('print')
 
     def visit_scope(self, node):
         nonlocal_names, global_names = GlobalAndNonLocalFinder.run(node)
@@ -211,8 +251,14 @@ class ScopeBuilder(utils.NodeVisitor):
                 self.init_top_scope()
             self.generic_visit(node)
 
-    def assign_to_name(self, name):
-        self.current_scope.add_name(name, NameType.Local)
+    def assign_to_name(self, name, name_type = NameType.Local):
+        result = self.current_scope.lookup_name(name)
+
+        if result is not None:
+            typ, scope = result
+            if typ == NameType.Process:
+                return
+        self.current_scope.add_name(name, name_type)
 
     def visit_Program(self, node : dast.Program):
         # create a scope for top-level
@@ -222,13 +268,31 @@ class ScopeBuilder(utils.NodeVisitor):
         if not is_simple_class_arglist(node.args):
             raise NotImplementedError("Currently only simple class is supported")
         self.assign_to_name(node.name)
+        if is_process_class(node.args):
+            self.receive_handler_idx = 0
         self.visit_scope(node)
 
     def visit_FuncDef(self, node : dast.FuncDef):
-        if self.current_scope.type != ScopeType.Process or \
-           node.name not in {"setup", "receive"}:
-            self.assign_to_name(node.name)
+        self.assign_to_name(node.name)
         self.visit_scope(node)
+
+    def visit_TypedArgList(self, node : dast.ArgList):
+        if self.current_scope.type == ScopeType.ReceiveHandler:
+            for arg in node.args:
+                if arg.name == 'msg' or arg.name == 'from_':
+                    names = AssignNameFinder.run(arg.value, self.current_scope)
+                    for name in names:
+                        self.assign_to_name(name, NameType.HandlerPattern)
+        else:
+            if self.current_scope.type == ScopeType.ProcessSetup:
+                target_scope = self.current_scope.parent
+                name_type = NameType.Process
+            else:
+                target_scope = self.current_scope
+                name_type = NameType.Local
+
+            for arg in node.args:
+                target_scope.add_name(arg.name, name_type)
 
     def visit_YieldFrom(self, node : dast.YieldFrom):
         if isinstance(self.current_scope.ast, dast.FuncDef):
@@ -242,15 +306,21 @@ class ScopeBuilder(utils.NodeVisitor):
         else:
             assert("Yield can be only used in function")
 
-
     def visit_ExprStmt(self, node : dast.ExprStmt):
         assert(node.target_list is not None)
         if len(node.target_list) == 0:
             pass
         for target in node.target_list:
-            names = AssignNameFinder.run(target, self)
+            names = AssignNameFinder.run(target, self.current_scope)
             for name in names:
                 self.assign_to_name(name)
+
+    def visit_ForStmt(self, node : dast.ForStmt):
+        names = AssignNameFinder.run(node.target, self.current_scope)
+        for name in names:
+            self.assign_to_name(name)
+
+        self.generic_visit(node)
 
     def visit_ImportStmt(self, node : dast.ImportStmt):
         for import_item in node.imported_as:

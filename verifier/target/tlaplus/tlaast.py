@@ -1,5 +1,3 @@
-import ast
-#from . import types
 
 TLA_AND = '''/\\'''
 TLA_OR = '''\/'''
@@ -11,6 +9,10 @@ TLA_GT = ">"
 TLA_GE = ">="
 TLA_LT = "<"
 TLA_LE = "<="
+
+TLA_MOD = '%'
+TLA_MINUS = '-'
+TLA_ADD = '+'
 
 TLA_CONCAT = "\\o"
 
@@ -24,14 +26,13 @@ TLA_EXISTS = "\\E"
 
 # reference tla-plus page 268
 
-class TlaAST(ast.AST):
+class TlaAST(object):
 
     _fields = []
     _attributes = []
 
     def __init__(self):
         super().__init__()
-        self.tlatype = None
 
     def to_tla(self, indent=0):
         print(self)
@@ -46,13 +47,15 @@ class TlaModule(TlaAST):
         self.name = name
         self.statements = statements
 
-    def to_tla(self, indent=0):
-        return \
-                ('''---------------- MODULE {0} -------------------\n'''
-                 '''\n'''
-                 '''{1}\n'''
-                 '''\n'''
-                 '''===============================================\n''').format(self.name, '\n'.join([statement.to_tla() for statement in self.statements]))
+    def to_tla(self):
+        lines = []
+        lines.append('''---------------- MODULE {0} -------------------'''.format(self.name))
+        lines.append('')
+        for statement in self.statements:
+            lines += statement.to_tla(0)
+        lines.append('')
+        lines.append('===============================================')
+        return '\n'.join(lines)
                  
 class TlaSymbol(TlaAST):
     _attributes = ["name"]
@@ -108,7 +111,8 @@ class TlaAndOrExpr(TlaAST):
         self.exprs = exprs
 
     def to_tla(self, indent=0):
-        return ("\n" + " " * indent).join(["{0} {1}".format(self.op, expr.to_tla(indent + len(self.op) + 1)) for expr in self.exprs])
+        exprs = self.exprs if self.exprs else [TlaConstantExpr(True)]
+        return ("\n" + " " * indent).join(["{0} {1}".format(self.op, expr.to_tla(indent + len(self.op) + 1)) for expr in exprs])
 
 class TlaBinaryExpr(TlaAST):
     _fields = ["lexpr", "rexpr"]
@@ -418,21 +422,11 @@ class TlaUnchangedExpr(TlaAST):
 # constant
 #===============================================
 class TlaConstantExpr(TlaAST):
-    _attributes = ["value", "tlatype"]
+    _attributes = ["value"]
 
-    def __init__(self, value, tlatype=None):
+    def __init__(self, value):
         super().__init__()
-        self.tlatype = tlatype
         self.value = value
-        if self.tlatype is None:
-            if isinstance(self.value, str):
-                self.tlatype = types.String()
-            elif isinstance(self.value, bool):
-                self.tlatype = types.Boolean()
-            elif isinstance(self.value, int):
-                self.tlatype = types.Integer()
-            else:
-                self.tlatype = types.Void()
 
     def to_tla(self, indent=0):
         if isinstance(self.value, str):
@@ -456,8 +450,12 @@ class TlaIntegerSetExpr(TlaAST):
 # dummy for debug purpose
 #================================================
 class TlaPlaceHolder(TlaAST):
-    def to_tla(self, indent=0):
-        return "*place holder*"
+    def __init__(self, node):
+        super().__init__()
+        self.node = node
+
+    def to_tla(self,  indent=0):
+        return "<place holder for: {0}".format(self.node)
 
 if __name__ == "__main__":
     tlaast = TlaModule("TEST",

@@ -1,4 +1,4 @@
-from . import utils
+from verifier import utils
 
 def naive_checker(u, v):
     return (u.name == v.name)

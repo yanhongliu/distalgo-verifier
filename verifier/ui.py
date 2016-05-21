@@ -19,13 +19,22 @@ def dpyfile_to_tla(infile, outfile=None):
         pass_manager = PassManager()
         # add pass
         pass_manager.add_pass(BuildCFGPass())
+        # pass_manager.add_pass(DumpFunction())
+        pass_manager.add_pass(NormalizePass())
+        pass_manager.add_pass(ReplaceBuiltinFunctionPass())
+        # pass_manager.add_pass(DumpFunction())
+        pass_manager.add_pass(TagVariables())
+        pass_manager.add_pass(TypeAnalysis())
+        # pass_manager.add_pass(DumpFunction())
+        pass_manager.add_pass(ConstantProp())
+        # pass_manager.add_pass(DumpFunction())
+        pass_manager.add_pass(Inliner())
         pass_manager.add_pass(SSAPass())
         pass_manager.add_pass(SimplifyCFGPass())
-        pass_manager.add_pass(DCE())
-        pass_manager.add_pass(DumpFunction())
+        # pass_manager.add_pass(DumpFunction())
         pass_manager.run(modules)
 
-        codegen = CodeGen()
+        codegen = CodeGen(pass_manager)
         codegen.run(modules, outfile)
 
 def main():
