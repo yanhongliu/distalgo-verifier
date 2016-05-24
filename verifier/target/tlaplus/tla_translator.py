@@ -2,10 +2,10 @@ from verifier import ir, utils
 import enum
 from .tlaast import *
 from .tla_helper import *
-from verifier.frontend import NameType
+from verifier.frontend import NameType, ScopeType
 from verifier.opt import *
 from verifier import types
-
+from .fill_unchange import Fill
 
 def check_loop(block, path):
     if block in path:
@@ -18,8 +18,8 @@ def check_loop(block, path):
     return False
 
 TlaOperatorMap = {
-    '>' : TLA_LT,
-    '<' : TLA_GT,
+    '>' : TLA_GT,
+    '<' : TLA_LT,
     '==' : TLA_EQ,
     'and' : TLA_AND,
     'or' : TLA_OR,
@@ -40,13 +40,14 @@ class GetIRNames(utils.NodeVisitor):
 
 class PatternTranslator(utils.NodeVisitor):
     _nodebaseclass=ir.Value
-    def __init__(self, expr, is_assign = False):
+    def __init__(self, expr, translator, is_assign = False):
         self.stack = []
         self.constrains = []
         self.freevar = []
         self.result = (self.constrains, self.freevar)
         self.expr = expr
         self.is_assign = is_assign
+        self.translator = translator
 
     def indexed_expr(self):
         result = self.expr
@@ -72,13 +73,24 @@ class PatternTranslator(utils.NodeVisitor):
     def visit_Constant(self, node: ir.Constant):
         self.constrains.append(tla_eq(self.indexed_expr(),
                                       TlaConstantExpr(node.value)))
+
+    def is_freevar(self, name):
+        for names in reversed(self.translator.quantifier_stack):
+            if name in names:
+                return False
+        return True
+
     def visit_IRName(self, node: ir.IRName):
-        if node.name_type == NameType.HandlerPattern or node.name_type == NameType.Pattern or self.is_assign:
+        if self.is_freevar(node.name) and (node.name_type == NameType.HandlerPattern or node.name_type == NameType.Pattern or self.is_assign):
             # FIXME, what if same free var appear twice?
             self.freevar.append((self.indexed_expr(), node.name))
         else:
+            if node.name_type == NameType.HandlerPattern or node.name_type == NameType.Pattern:
+                v = TlaSymbol(node.name)
+            else:
+                v = apply_expr(node.name, "self")
             self.constrains.append(tla_eq(self.indexed_expr(),
-                                        apply_expr(node.name, "self")))
+                                        v))
 
 class RWTracker(object):
     def __init__(self):
@@ -166,7 +178,7 @@ def translate_insts_simple_one_block(top_exprs, insts, translator, skip_branch =
             if isinstance(inst.target, ir.IRName):
                 handle_assign(inst.target.name, expr)
             else:
-                constrains, freevars = PatternTranslator.run(inst.target, TlaSymbol("_temp_assign"), is_assign=True)
+                constrains, freevars = PatternTranslator.run(inst.target, TlaSymbol("_temp_assign"), translator, is_assign=True)
                 tuple_exprs = []
                 exprs.append(TlaLetExpr([TlaDefinitionStmt(TlaSymbol("_temp_assign"), [], expr)], tla_and(tuple_exprs)))
                 exprs = tuple_exprs
@@ -176,9 +188,14 @@ def translate_insts_simple_one_block(top_exprs, insts, translator, skip_branch =
         elif isinstance(inst, ir.Send):
             message = ExprTranslator.run(inst.value, rwtracker, translator)
             target = ExprTranslator.run(inst.to, rwtracker, translator)
+            # FIXME a dirty hack to avoid ssa-ize msg handler
+            if inst.parent.function.scope.type != ScopeType.ReceiveHandler:
+                msgQ = TlaSymbol("msgQueue")
+            else:
+                msgQ = TlaExceptExpr(TlaSymbol("msgQueue"), [tla_eq(apply_expr("!", "self"), TlaInstantiationExpr(TlaSymbol("Tail"), [apply_expr("msgQueue", "self")]))])
             exprs.append(TlaInstantiationExpr(TlaSymbol("Send"),
                                                 [TlaSymbol("self"), message,
-                                                target]))
+                                                target, msgQ]))
         rwtracker.remove(inst)
 
     if not skip_branch:
@@ -193,7 +210,7 @@ def translate_insts_simple_one_block(top_exprs, insts, translator, skip_branch =
                 block2 = last_inst.target_block_alt
                 block1_label = block1.function.scope.gen_name(block1.label)
                 block2_label = block2.function.scope.gen_name(block2.label)
-                cond_expr = ExprTranslator.run(last_inst.condition, rwtracker)
+                cond_expr = ExprTranslator.run(last_inst.condition, rwtracker, translator)
                 expr = TlaIfExpr(cond_expr, TlaConstantExpr(block1_label), TlaConstantExpr(block2_label))
                 next_pc = except_expr_helper('pc', expr)
         if next_pc is None:
@@ -214,7 +231,7 @@ class Action(object):
         ret_addr_name = self.block.function.scope.gen_name("ret_pc")
         exprs = [self.check_pc()]
         if self.block.label == "end" and self.block.function.ast_node.name == "run":
-            exprs.append(except_expr_helper('atomic_barrier', TlaConstantExpr(-1)))
+            exprs.append(tla_eq(TlaSymbol("atomic_barrier'"), TlaConstantExpr(-1)))
         else:
             exprs.append(except_expr_helper('pc', apply_expr(ret_addr_name, 'self')))
         self.tla = TlaDefinitionStmt(TlaSymbol(self.name), [TlaSymbol('self')], tla_and(exprs))
@@ -233,12 +250,12 @@ class Action(object):
         ret_addr_name = process_scope.gen_name("yield_ret_pc")
         yield_pc_name = process_scope.gen_name("yield")
         exprs = [self.check_pc(), except_expr_helper(ret_addr_name, TlaConstantExpr(self.next_name)), except_expr_helper('pc', TlaConstantExpr(yield_pc_name))]
-        exprs.append(except_expr_helper('atomic_barrier', TlaConstantExpr(-1)))
+        exprs.append(tla_eq(TlaSymbol("atomic_barrier'"), TlaConstantExpr(-1)))
         self.tla = TlaDefinitionStmt(TlaSymbol(self.name), [TlaSymbol('self')], tla_and(exprs))
 
-    def from_insts(self, insts):
+    def from_insts(self, insts, translator):
         exprs = []
-        translate_insts_simple_one_block(exprs, insts, False, self.next_name)
+        translate_insts_simple_one_block(exprs, insts, translator, False, self.next_name)
         exprs = [self.check_pc()] + exprs
         self.tla = TlaDefinitionStmt(TlaSymbol(self.name), [TlaSymbol('self')], tla_and(exprs))
 
@@ -293,7 +310,7 @@ class ExprTranslator(utils.NodeVisitor):
     def visit_Received(self, node : ir.Received):
         rcvd = apply_expr('rcvd', 'self')
         temp = TlaSymbol(self.translator.get_tempname("_value"))
-        constrains, freevar = PatternTranslator.run(node.pattern, temp)
+        constrains, freevar = PatternTranslator.run(node.pattern, temp, self.translator)
         tla = tla_exists(tla_in(temp, rcvd), tla_and(constrains))
         return tla
 
@@ -322,9 +339,6 @@ class ExprTranslator(utils.NodeVisitor):
     def visit_UnaryOp(self, node : ir.UnaryOp):
         return TlaUnaryExpr(node.op, self.visit(node.operands[0]))
 
-    def visit_Quantifier(self, node):
-        return TlaPlaceHolder(node)
-
     def visit_ProcessId(self, node):
         return TlaSymbol("self")
 
@@ -344,7 +358,8 @@ class ExprTranslator(utils.NodeVisitor):
     def visit_Quantifier(self, node : ir.Quantifier):
         domain = node.domain
         if isinstance(domain, ir.Received):
-            constrains, freevars = PatternTranslator.run(domain.pattern, TlaSymbol("_value"))
+            constrains, freevars = PatternTranslator.run(domain.pattern, TlaSymbol("_value"), self.translator)
+            self.translator.quantifier_stack.append({var for (_, var) in freevars})
             rcvd = apply_expr('rcvd', 'self')
             filtered_rcvd = TlaSetCompositionExpr(TlaSymbol("_value"), rcvd, tla_and(constrains))
             freevar_def = []
@@ -353,9 +368,11 @@ class ExprTranslator(utils.NodeVisitor):
 
             has_predicate = self.visit(node.predicate)
             full_predicate = TlaLetExpr(freevar_def, has_predicate)
+            self.translator.quantifier_stack.pop()
             return TlaPredicateExpr(TlaOperatorMap[node.op], tla_in(TlaSymbol("_value"), filtered_rcvd), full_predicate)
         elif isinstance(domain, ir.BinaryOp) and domain.op == 'in':
-            constrains, freevars = PatternTranslator.run(domain.left, TlaSymbol("_value"))
+            constrains, freevars = PatternTranslator.run(domain.left, TlaSymbol("_value"), self.translator)
+            self.translator.quantifier_stack.append({var for (_, var) in freevars})
             domain_expr = self.visit(domain.right)
             filtered_domain_expr = TlaSetCompositionExpr(TlaSymbol("_value"), domain_expr, tla_and(constrains) if constrains else TlaConstantExpr(True))
             freevar_def = []
@@ -364,6 +381,7 @@ class ExprTranslator(utils.NodeVisitor):
 
             has_predicate = self.visit(node.predicate)
             full_predicate = TlaLetExpr(freevar_def, has_predicate)
+            self.translator.quantifier_stack.pop()
             return TlaPredicateExpr(TlaOperatorMap[node.op], tla_in(TlaSymbol("_value"), filtered_domain_expr), full_predicate)
         return TlaPlaceHolder(node)
 
@@ -399,9 +417,15 @@ class PatternToType(utils.NodeVisitor):
     def visit_IRName(self, node: ir.IRName):
         return types.Unknown(node.origin_name)
 
-def translate_function_simple_one_block(top_exprs, block, translator):
+def translate_function_simple_one_block(top_exprs, block, translator, has_send):
     insts = block.ir
-    exprs = translate_insts_simple_one_block(top_exprs, insts, True)
+    exprs = translate_insts_simple_one_block(top_exprs, insts, translator, True)
+    # FIXME dirty hack, only for msg handler phi like msgQ
+    if not has_send:
+        has_send = any(isinstance(inst, ir.Send) for inst in insts)
+    if len(block.succ) == 0:
+        if not has_send:
+            exprs.append(except_expr_helper("msgQueue", inst_expr("Tail", TlaSymbol("@"))))
     if len(insts) > 0 and isinstance(insts[-1], ir.CondBranch):
         last_inst = insts[-1]
         block1 = last_inst.target_block
@@ -410,17 +434,19 @@ def translate_function_simple_one_block(top_exprs, block, translator):
         exprs1 = []
         exprs2 = []
         exprs.append(TlaIfExpr(cond_expr, tla_and(exprs1), tla_and(exprs2)))
-        translate_function_simple_one_block(exprs1, block1)
-        translate_function_simple_one_block(exprs2, block2)
+        translate_function_simple_one_block(exprs1, block1, translator, has_send)
+        translate_function_simple_one_block(exprs2, block2, translator, has_send)
     else:
         if block.succ:
-            translate_function_simple_one_block(exprs, next(iter(block.succ)), translator)
+            translate_function_simple_one_block(exprs, next(iter(block.succ)), translator, has_send)
     return exprs
 
 
 class Translator(object):
-    def __init__(self):
+    def __init__(self, codegen):
         self.tempname = dict()
+        self.codegen = codegen
+        self.quantifier_stack = []
 
     def get_tempname(self, name):
         if name not in self.tempname:
@@ -502,7 +528,7 @@ class Translator(object):
             nonlocal insts
             if insts:
                 action = Action(block, cur_name(), next_name())
-                action.from_insts(insts)
+                action.from_insts(insts, self)
                 actions.append(action)
 
                 insts = []
@@ -537,9 +563,9 @@ class Translator(object):
             if len(insts) != 0:
                 general_action()
 
-        print('')
         for a in actions:
-            print(a.to_tla())
+            Fill.run(a.tla, self.codegen.names)
+            self.codegen.defines.append(a.tla)
 
     def check_message_handler_overlap(self, message_handlers):
         pattern_type = {func : PatternToType.run(func.msg_pattern) for func in message_handlers}
@@ -567,19 +593,23 @@ class Translator(object):
         exprs = top_exprs
 
         for function in message_handlers:
-            constrains, freevars = PatternTranslator.run(function.msg_pattern, msg)
+            constrains, freevars = PatternTranslator.run(function.msg_pattern, msg, self)
             freevar_def = []
             for (val, var) in freevars:
                 freevar_def.append(TlaDefinitionStmt(TlaSymbol(var), [], val))
             handler_exprs = []
             full_predicate = TlaLetExpr(freevar_def, tla_and(handler_exprs))
-            translate_function_simple_one_block(handler_exprs, function.basicblocks[0], self)
+            translate_function_simple_one_block(handler_exprs, function.basicblocks[0], self, False)
 
             next_exprs = []
             exprs.append(TlaIfExpr(tla_and(constrains), full_predicate, tla_and(next_exprs)))
             exprs = next_exprs
 
-        print(yield_point_action(message_handlers[0].scope.get_process_scope(), tla_and(top_exprs)).to_tla())
+        exprs.append(except_expr_helper("msgQueue", inst_expr("Tail", TlaSymbol("@"))))
+        yield_action = yield_point_action(message_handlers[0].scope.get_process_scope(), tla_and(top_exprs),
+                                 self.codegen.need_rcvd())
+        Fill.run(yield_action, self.codegen.names)
+        self.codegen.defines.append(yield_action)
 
 
 if __name__ == "__main__":

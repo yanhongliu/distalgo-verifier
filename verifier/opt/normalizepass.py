@@ -64,3 +64,4 @@ class NormalizePass(FunctionPass):
                (function.scope.parent is not None and function.scope.parent.type == ScopeType.Process):
                 ReplaceSelfPropertyInSetup.run(inst)
             ReplaceVariableAndAllocateName.run(inst, function, self.names)
+

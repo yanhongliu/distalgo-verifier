@@ -10,6 +10,7 @@ from .typeanalysis import TypeAnalysis
 from .normalizepass import NormalizePass
 from .replacebuiltinfunction import ReplaceBuiltinFunctionPass
 from .inliner import Inliner
+from .getvariables import GetVariablesPass
 
 __all__ = [
     "PassManager",
@@ -26,5 +27,6 @@ __all__ = [
     "Inliner",
     "AssignTargetVisitor",
     "ModulePass",
+    "GetVariablesPass",
     "iter_instructions"
 ]

@@ -455,15 +455,16 @@ class ScopeTranslator(utils.NodeVisitor):
             elif node.expr.name == "any":
                 return self.handle_quantifier("some", node)
             elif node.expr.name == "await":
+
                 await_cond_block = self.new_block(self.new_label("await"))
                 await_block = self.new_block(self.new_label("await_body"))
                 end_block = self.new_block(self.new_label("await_end"))
                 with BlockSetter(self, await_cond_block):
+                    self.append_inst(Label("await"))
                     value = self.visit(node.args.args[0].value)
                     self.append_inst(CondBranch(value, end_block, await_block))
 
                 with BlockSetter(self, await_block):
-                    self.append_inst(Label("await"))
                     self.append_inst(Branch(await_cond_block))
                 self.set_block(end_block)
                 return

@@ -10,12 +10,17 @@ DEBUG=True
 
 def dpyfile_to_tla(infile, outfile=None):
     filename = os.path.basename(infile)
+    purename, _, suffix = filename.rpartition(".")
+    if len(purename) == 0:
+        purename = suffix
+        suffix = ""
+
     with open(infile, "r") as f:
         source = f.read()
         parser = Parser()
         ast = parser.parse(source, infile)
         translator = Translator()
-        modules = [translator.run(filename, ast)]
+        modules = [translator.run(purename, ast)]
         pass_manager = PassManager()
         # add pass
         pass_manager.add_pass(BuildCFGPass())
@@ -32,6 +37,7 @@ def dpyfile_to_tla(infile, outfile=None):
         pass_manager.add_pass(SSAPass())
         pass_manager.add_pass(SimplifyCFGPass())
         # pass_manager.add_pass(DumpFunction())
+        pass_manager.add_pass(GetVariablesPass())
         pass_manager.run(modules)
 
         codegen = CodeGen(pass_manager)

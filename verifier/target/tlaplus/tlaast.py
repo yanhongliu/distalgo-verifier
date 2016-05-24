@@ -48,14 +48,13 @@ class TlaModule(TlaAST):
         self.statements = statements
 
     def to_tla(self):
-        lines = []
-        lines.append('''---------------- MODULE {0} -------------------'''.format(self.name))
-        lines.append('')
+        lines = '''----------------------------- MODULE {0} -------------------\n'''.format(self.name)
         for statement in self.statements:
             lines += statement.to_tla(0)
-        lines.append('')
-        lines.append('===============================================')
-        return '\n'.join(lines)
+            lines += '\n\n'
+        lines += '\n'
+        lines += '==============================================================\n'
+        return lines
                  
 class TlaSymbol(TlaAST):
     _attributes = ["name"]
@@ -69,6 +68,26 @@ class TlaSymbol(TlaAST):
 
     def to_tla(self, indent=0):
         return self.name
+
+class TlaExtendsStmt(TlaAST):
+    _fields = ["extends"]
+
+    def __init__(self, extends):
+        super().__init__()
+        self.extends = extends
+
+    def to_tla(self, indent=0):
+        return "EXTENDS {0}\n".format(", ".join(self.extends))
+
+class TlaVariablesStmt(TlaAST):
+    _fields = ["variables"]
+
+    def __init__(self, variables):
+        super().__init__()
+        self.variables = variables
+
+    def to_tla(self, indent=0):
+        return "VARIABLES {0}\n".format(", ".join(self.variables))
 
 class TlaConstantStmt(TlaAST):
     _fields = ["constants"]
@@ -411,12 +430,17 @@ class TlaChangedActionExpr(TlaAST):
 class TlaUnchangedExpr(TlaAST):
     _fields = ["state"]
     
-    def __init__(self, state):
+    def __init__(self, all_vars, changed):
         super().__init__()
-        self.state = state
+        self.all_vars = all_vars
+        self.changed = changed
+
+    @property
+    def state(self):
+        return [var for var in (self.all_vars) if var not in self.changed]
 
     def to_tla(self, indent=0):
-        return "UNCHANGED {0}".format(self.state.to_tla())
+        return "UNCHANGED {0}".format(TlaTupleExpr(TlaSymbol(s) for s in self.state).to_tla())
 
 #===============================================
 # constant

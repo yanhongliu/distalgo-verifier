@@ -4,22 +4,21 @@ class P(process):
     def setup(s:set, nrequests:int): pass  # s is set of all other processes
 
     def mutex():
-        -- request
         c = logical_clock()
         send(('request', c, self.id), to= s)
         await(each(received(('request', c2, p)),
                    has= received(('release', c2, p)) or (c, self.id) < (c2, p))
               and each(p in s, has= received(('ack', c, p))))
-        -- release
         send(('release', c, self.id), to= s)
         return
 
     def receive(msg= ('request', c, p)):
-        send(('ack', c, self.id), to= p)
+        send(('ack', c, self.id), to= {p})
 
     def run():
-        while True:
+        while nrequests > 0:
             mutex()
+            nrequests = nrequests - 1
 
         send(('done', self.id), to= s)
         await(each(p in s, has= received(('done', p))))

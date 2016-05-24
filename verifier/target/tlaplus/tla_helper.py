@@ -80,36 +80,41 @@ def clock_expr():
     return apply_expr("clock", "self")
 
 def send_action(need_sent=True):
+    exprs = [tla_eq(_("msgQueue'"), TlaFunctionCompositionExpr(_("proc"), _("process"),
+                                                               TlaIfExpr(tla_in(_("proc"), _("dest")),
+                                                                         tla_append(apply_expr("msgQ", "proc"), _("msg")),
+                                                                         apply_expr("msgQ", "proc")))),
+            ]
+    if need_sent:
+        exprs.append(except_expr_helper("sent", tla_union(TlaApplyExpr(_("sent"), _("self")), TlaSetExpr([_("msg")]))))
     return TlaDefinitionStmt(_("Send"),
-                             [_("self"), _("content"), _("dest")],
+                             [_("self"), _("content"), _("dest"), _("msgQ")],
                              TlaLetExpr(TlaDefinitionStmt(_("msg"), [],
                                                           TlaRecordCompositionExpr([
                                                               TlaMap(_("timestamp"), clock_expr()),
                                                               TlaMap(_("src"), _("self")),
                                                               TlaMap(_("content"), _("content"))])),
-                                        tla_and([tla_eq(_("msgQueue'"), TlaFunctionCompositionExpr(_("proc"), _("p"),
-                                                                                                   TlaIfExpr(tla_in(_("proc"), _("dest")),
-                                                                                                             tla_append(apply_expr("msgQueue", "proc"), _("msg")),
-                                                                                                             apply_expr("msgQueue", "proc")))),
-                                                 except_expr_helper("sent", tla_union(TlaApplyExpr(_("sent"), _("self")), TlaSetExpr([_("msg")])))])))
+                                        tla_and(exprs)))
 
 
-def yield_point_action(scope, exprs, need_rcvd=True):
-    return TlaDefinitionStmt(_(scope.gen_name("YieldPoint")),
+def yield_point_action(scope, expr, need_rcvd=True):
+    exprs = [except_expr_helper("clock", TlaBinaryExpr("+",
+                                                       TlaConstantExpr(1),
+                                                       TlaIfExpr(tla_gt(TlaFieldExpr(_("msg"), _("timestamp")), _("@")),
+                                                                 TlaFieldExpr(_("msg"), _("timestamp")),
+                                                                 _("@")))),
+             ]
+    if need_rcvd:
+        exprs.append(except_expr_helper("rcvd", tla_union(apply_expr("rcvd", "self"), TlaSetExpr([TlaFieldExpr(_("msg"), _("content"))]))))
+    exprs.append(expr)
+    return TlaDefinitionStmt(_(scope.gen_name("yield")),
                              [_("self")],
                              tla_and([pc_is_expr(scope.gen_name('yield')),
+                                      tla_eq(TlaSymbol("atomic_barrier"), TlaConstantExpr(-1)),
                              TlaLetExpr(TlaDefinitionStmt(_("msg"), [],
                                                           inst_expr("Head", apply_expr("msgQueue", "self"))),
                                         TlaIfExpr(tla_neq(apply_expr("msgQueue", "self"), TlaTupleExpr([])),
-                                                  tla_and([except_expr_helper("clock", TlaBinaryExpr("+",
-                                                                                                     TlaConstantExpr(1),
-                                                                                                    TlaIfExpr(tla_gt(TlaFieldExpr(_("msg"), _("timestamp")), _("@")),
-                                                                                                              TlaFieldExpr(_("msg"), _("timestamp")),
-                                                                                                              _("@")))),
-                                                           except_expr_helper("msgQueue", inst_expr("Tail", _("@"))),
-                                                           except_expr_helper("rcvd", tla_union(apply_expr("rcvd", "self"), TlaSetExpr([TlaFieldExpr(_("msg"), _("content"))]))),
-                                                           exprs]),
+                                                  tla_and(exprs),
                                                   tla_and([
-                                                      tla_eq(apply_expr('atomic_barrier', 'self'), TlaConstantExpr(-1)),
-                                                      except_expr_helper("atomic_barrier", TlaSymbol("self")),
+                                                      tla_eq(TlaSymbol("atomic_barrier'"), TlaSymbol("self")),
                                                       except_expr_helper("pc", apply_expr(scope.gen_name("yield_ret_pc"), "self"))])))]))

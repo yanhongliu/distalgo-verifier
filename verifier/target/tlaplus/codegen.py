@@ -26,25 +26,47 @@ class CodeGen(object):
     def __init__(self, passmanager):
         self.vars = set()
         self.passmanager = passmanager
-        self.translator = Translator()
+        self.translator = Translator(self)
 
-    def var(self, name):
-        self.vars.add(name)
-        return name
-
-    def gen_pc(self, pc_name, is_group):
-        pass
-
-    def fill_unchanged(self, action):
-        pass
+        self.names = ["pc", "msgQueue", "clock", "atomic_barrier"]
+        if self.need_sent():
+            self.names.append("sent")
+        if self.need_rcvd():
+            self.names.append("rcvd")
+    def need_sent(self):
+        return self.passmanager.get_pass(GetVariablesPass).need_sent
+    def need_rcvd(self):
+        return self.passmanager.get_pass(GetVariablesPass).need_rcvd
 
     def run(self, modules, outfile):
         with smart_open(outfile) as out:
+            gvpass = self.passmanager.get_pass(GetVariablesPass)
             for module in modules:
-                self.tla_module = TlaModule(module.name, [])
-                # only scan through
+                self.defines = []
+                self.tla_module = TlaModule(module.name, self.defines)
 
-                print(send_action().to_tla())
+                names = set()
+                for function in module.functions:
+                    if function.scope.type == ScopeType.Process:
+                        names.add(function.scope.gen_name("yield_ret_pc"))
+                    if isinstance(function.ast_node, dast.Program):
+                        continue
+                    if isinstance(function.ast_node, dast.ClassDef):
+                        continue
+                    # skip main for now
+                    if function.scope.type == ScopeType.Main:
+                        continue
+                    # add ret pc
+                    if function.scope.type == ScopeType.General:
+                        names.add(function.scope.gen_name("ret_pc"))
+
+                    names |= gvpass.names[function]
+
+                self.names += sorted(list(names))
+                # only scan through
+                self.defines.append(TlaExtendsStmt(["Integers", "Sequences", "FiniteSets", "TLC"]))
+                self.defines.append(TlaVariablesStmt(self.names))
+                self.defines.append(send_action(self.need_sent()))
                 for function in module.functions:
                     if isinstance(function.ast_node, dast.Program):
                         self.gen_program(function)
@@ -55,7 +77,8 @@ class CodeGen(object):
                             self.gen_entry_function(function)
                     elif function.scope.type == ScopeType.Main:
                         self.gen_main_function(function)
-                #out.write(self.tla_module.to_tla())
+
+                out.write(self.tla_module.to_tla())
 
     def gen_program(self, function):
         if not CodeGen.is_simple_program(function):
