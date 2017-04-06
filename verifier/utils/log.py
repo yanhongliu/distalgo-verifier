@@ -1,9 +1,14 @@
+import sys
+
 class Logger(object):
     def __init__(self, is_debug=False):
         self.is_debug = is_debug
 
-    def debug(self, msg):
+    def debug(self, *args, **kargs):
         if self.is_debug:
-            print(msg)
+            print(*args, **kargs, file=sys.stderr)
 
-default_logger = Logger()
+DefaultLogger = Logger()
+
+def debug(*args, **kargs):
+    DefaultLogger.debug(*args, **kargs)

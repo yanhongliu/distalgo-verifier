@@ -16,7 +16,9 @@ class GetVariables(NodeVisitor):
 
     def visit_Received(self, node):
         self.gvpass.need_rcvd = True
-        self.generic_visit(node)
+
+    def visit_Sent(self, node):
+        self.gvpass.need_sent = True
 
 class GetVariablesPass(FunctionPass):
     def __init__(self):

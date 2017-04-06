@@ -6,11 +6,12 @@ from .simplifycfg import SimplifyCFGPass
 from .dumpfunction import DumpFunction
 from .tagvariables import TagVariables, AssignTargetVisitor
 from .constantprop import ConstantProp
-from .typeanalysis import TypeAnalysis
 from .normalizepass import NormalizePass
 from .replacebuiltinfunction import ReplaceBuiltinFunctionPass
 from .inliner import Inliner
 from .getvariables import GetVariablesPass
+from .insertifelse import InsertIfElse
+from .utils import CheckSpecialBranchInstruction
 
 __all__ = [
     "PassManager",
@@ -20,7 +21,6 @@ __all__ = [
     "FunctionPass",
     "DumpFunction",
     "ConstantProp",
-    "TypeAnalysis",
     "TagVariables",
     "NormalizePass",
     "ReplaceBuiltinFunctionPass",
@@ -28,5 +28,7 @@ __all__ = [
     "AssignTargetVisitor",
     "ModulePass",
     "GetVariablesPass",
+    "InsertIfElse",
+    "CheckSpecialBranchInstruction",
     "iter_instructions"
 ]

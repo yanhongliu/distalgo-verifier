@@ -1,0 +1,3 @@
+[submodule "distalgo"]
+	path = distalgo
+	url = git@github.com:DistAlgo/distalgo.git

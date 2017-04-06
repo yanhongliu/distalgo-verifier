@@ -6,14 +6,14 @@ class SimplifyCFGPass(FunctionPass):
         block = function.basicblocks[block_idx]
         # eliminate trivial dead code
         if len(block.pred) == 0 and block_idx != 0:
-            function.remove_block(block_idx)
+            function.remove_block_by_idx(block_idx)
             return True
 
         # if this is a empty block, remove it
         if len(block.ir) == 0:
             assert len(block.succ) <= 1
             block.replace_uses_with(function.basicblocks[block_idx+1])
-            function.remove_block(block_idx)
+            function.remove_block_by_idx(block_idx)
             return True
 
         # if it contains only branch, remove it and merge it
@@ -21,9 +21,11 @@ class SimplifyCFGPass(FunctionPass):
             assert len(block.succ) == 1
             branch = block.ir[0]
             next_block = branch.get_op(0)
-            block.replace_uses_with(next_block)
-            function.remove_block(block_idx)
-            return True
+            # make sure we don't remove dead loop
+            if block is not next_block:
+                block.replace_uses_with(next_block)
+                function.remove_block_by_idx(block_idx)
+                return True
 
         # if last ir is branch, and it jumps to next block, remove branch
         if len(block.ir) > 0 and isinstance(block.ir[-1], Branch):
@@ -41,7 +43,8 @@ class SimplifyCFGPass(FunctionPass):
             next_block.ir = block.ir + next_block.ir
             block.ir = []
             block.replace_uses_with(next_block)
-            function.remove_block(block_idx)
+            next_block.update_inst_parent()
+            function.remove_block_by_idx(block_idx)
             return True
 
         if len(block.ir) > 0 and isinstance(block.ir[-1], CondBranch):

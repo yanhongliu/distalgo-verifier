@@ -1,6 +1,7 @@
 from .passclasses import ModulePass, iter_instructions
 from verifier.ir import *
 from verifier.utils import *
+from verifier.frontend import ScopeType
 import enum
 
 class FunctionTag(enum.Enum):
@@ -68,8 +69,14 @@ class TagVariables(ModulePass):
         for var in self.write_only_vars:
             for inst, name in self.write_by[var]:
                 # write only one var
-                if isinstance(inst, Assign) and inst.target is name and not isinstance(inst.expr, Function):
-                    inst.parent.replace_inst(inst, inst.expr)
+                if isinstance(inst, Assign) and inst.target is name and \
+                    (not isinstance(inst.expr, Function) or
+                     inst.expr.scope.type == ScopeType.General and inst.expr.scope.parent.type == ScopeType.General):
+                    # FIXME: check sideeffect
+                    if isinstance(inst.expr, Instruction):
+                        inst.parent.replace_inst(inst, inst.expr)
+                    else:
+                        inst.parent.remove_inst(inst)
 
         # remove temp var that used in same block
         for wvar, winsts in self.write_by.items():

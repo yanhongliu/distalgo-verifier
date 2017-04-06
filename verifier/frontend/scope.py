@@ -1,19 +1,19 @@
 from .. import utils
-from . import dast
+from da.compiler import dast
 import enum
 
 def is_self(node):
-    return isinstance(node, dast.Name) and node.name == "self"
+    return isinstance(node, dast.NamedVar) and node.name == "self"
 
 # mostly, this is what we care about
-def is_simple_class_arglist(arglist : dast.ArgList):
+def is_simple_class_arglist(arglist : dast.Arguments):
     if arglist.vargs is not None or arglist.kwargs is not None or len(arglist.args2) != 0:
         return False
 
     for arg in arglist.args:
         # keyword arg
         if arg.name is not None or \
-            not isinstance(arg.value, dast.Name):
+            not isinstance(arg.value, dast.NamedVar):
             return False
 
     return True
@@ -22,7 +22,7 @@ def is_process_class(arglist):
     if not is_simple_class_arglist(arglist):
         return False
 
-    if len(arglist.args) == 1 and isinstance(arglist.args[0].value, dast.Name) and arglist.args[0].value.name == "process":
+    if len(arglist.args) == 1 and isinstance(arglist.args[0].value, dast.NamedVar) and arglist.args[0].value.name == "process":
         return True
 
     return False
@@ -60,15 +60,17 @@ class Scope(object):
         self.names = dict()
         if self.parent is not None:
             self.parent.add_child(self)
-        if isinstance(ast, dast.ClassDef):
-            if is_process_class(ast.args):
-                self.type = ScopeType.Process
-        elif isinstance(ast, dast.FuncDef):
+        if isinstance(ast, dast.ClassStmt):
+            # TODO
+            pass
+        elif isinstance(ast, dast.Process):
+            self.type = ScopeType.Process
+        elif isinstance(ast, dast.EventHandler):
+            self.type = ScopeType.ReceiveHandler
+        elif isinstance(ast, dast.Function):
             if parent.type == ScopeType.Process:
                 if ast.name == "setup":
                     self.type = ScopeType.ProcessSetup
-                elif ast.name == "receive":
-                    self.type = ScopeType.ReceiveHandler
             elif isinstance(parent.ast, dast.Program) and ast.name == "main":
                 self.type = ScopeType.Main
 
@@ -100,16 +102,13 @@ class Scope(object):
         scope = self
         result = ''
         while not isinstance(scope.ast, dast.Program):
-            if scope.type == ScopeType.ReceiveHandler:
-                result = scope.ast.name + '_' + str(self.receive_handler_idx) + '_' + result
-            else:
-                result = scope.ast.name + '_' + result
+            result = scope.ast.name + '_' + result
             scope = scope.parent
 
         return result + name
 
     def __repr__(self):
-        return "Scope(ast:{0} names:{1})".format(self.ast, self.names)
+        return "Scope(ast:{0}, parent:{2} names:{1})".format(self.ast, self.names, self.parent.ast if self.parent is not None else None)
 
     def get_process_scope(self):
         scope = self
@@ -152,15 +151,12 @@ class Setter(object):
 class ScopeSetter(Setter):
     def __init__(self, builder, node, nonlocal_names = None, global_names = None):
         self.scope = Scope(builder.current_scope, node, nonlocal_names, global_names)
-        if self.scope.type == ScopeType.ReceiveHandler:
-            builder.receive_handler_idx += 1
-            self.scope.receive_handler_idx = builder.receive_handler_idx
         builder.scopes[node] = self.scope
         super().__init__(builder, "current_scope", self.scope)
 
 class GlobalAndNonLocalFinder(utils.NodeVisitor):
     _result = ("nonlocal_names", "global_names")
-    _nodebaseclass=dast.AstNode
+    _nodebaseclass=dast.DistNode
 
     def __init__(self):
         super().__init__()
@@ -168,7 +164,7 @@ class GlobalAndNonLocalFinder(utils.NodeVisitor):
         self.nonlocal_names = set()
         self.global_names = set()
 
-    def visit_NonLocalStmt(self, node : dast.NonLocalStmt):
+    def visit_NonLocalStmt(self, node : dast.NonlocalStmt):
         for name in node.names:
             self.nonlocal_names.add(name)
 
@@ -182,10 +178,16 @@ class GlobalAndNonLocalFinder(utils.NodeVisitor):
             self.generic_visit(node)
 
     # don't cross the bonduary of scope
-    def visit_ClassDef(self, node):
+    def visit_ClassStmt(self, node):
         self.visit_scope(node)
 
-    def visit_FuncDef(self, node):
+    def visit_Process(self, node):
+        self.visit_scope(node)
+
+    def visit_Function(self, node):
+        self.visit_scope(node)
+
+    def visit_EventHandler(self, node : dast.EventHandler):
         self.visit_scope(node)
 
 builtin_names = {
@@ -203,7 +205,7 @@ builtin_names = {
 
 class AssignNameFinder(utils.NodeVisitor):
     _result = "names"
-    _nodebaseclass=dast.AstNode
+    _nodebaseclass=dast.DistNode
 
     def __init__(self, scope):
         super().__init__()
@@ -212,19 +214,129 @@ class AssignNameFinder(utils.NodeVisitor):
 
     def visit(self, node):
         if self.scope.type == ScopeType.ProcessSetup and \
-           isinstance(node, dast.PropertyExpr):
+           isinstance(node, dast.AttributeExpr):
             if is_self(node.expr):
                 self.scope.parent.add_name(node.name, NameType.Process)
 
-        if isinstance(node, dast.TupleExpr) or isinstance(node, dast.Name):
+        if isinstance(node, dast.TupleExpr) or isinstance(node, dast.SimpleExpr) or isinstance(node, dast.NamedVar):
             super().visit(node)
 
-    def visit_Name(self, node : dast.Name):
+    def visit_NamedVar(self, node : dast.NamedVar):
         self.names.add(node.name)
+
+class ScopeNameResolver(utils.NodeVisitor):
+    _nodebaseclass=dast.DistNode
+
+    def __init__(self, scope):
+        super().__init__()
+        self.current_scope = scope
+
+    def assign_to_name(self, name, name_type = NameType.Local):
+        #utils.debug("Assign To: " + str(name) + " under " + str(self.current_scope) + " PARENT "  + str(self.current_scope.parent))
+        result = self.current_scope.lookup_name(name)
+
+        if result is not None:
+            typ, scope = result
+            if typ == NameType.Process:
+                return
+        if self.current_scope.type == ScopeType.ProcessSetup:
+            self.current_scope.get_process_scope().add_name(name, NameType.Process)
+        else:
+            self.current_scope.add_name(name, name_type)
+
+    def visit_scope(self, node):
+        if node is self.current_scope.ast:
+            if isinstance(node, dast.Program):
+                self.visit_one_value(node.body)
+            elif isinstance(node, dast.ClassStmt):
+                self.visit_one_value(node.body)
+            elif isinstance(node, dast.Process):
+                self.visit_one_value(node.args)
+                self.visit_one_value(node.body)
+                self.visit_one_value(node.events)
+            elif isinstance(node, dast.Function):
+                self.visit_one_value(node.args)
+                self.visit_one_value(node.body)
+        elif not isinstance(node, dast.Program):
+            self.assign_to_name(node.name)
+
+    def visit_Program(self, node : dast.Program):
+        self.visit_scope(node)
+
+    def visit_ClassStmt(self, node : dast.ClassStmt):
+        self.visit_scope(node)
+
+    def visit_Process(self, node: dast.Process):
+        self.visit_scope(node)
+
+    def visit_Function(self, node : dast.Function):
+        self.visit_scope(node)
+
+    def visit_EventHandler(self, node : dast.EventHandler):
+        self.visit_scope(node)
+
+    def visit_Arguments(self, node : dast.Arguments):
+        if self.current_scope.type == ScopeType.ReceiveHandler:
+            for arg in node.args:
+                if arg.name == 'msg' or arg.name == 'from_':
+                    names = AssignNameFinder.run(arg.value, self.current_scope)
+                    for name in names:
+                        self.assign_to_name(name, NameType.HandlerPattern)
+        else:
+            if self.current_scope.type == ScopeType.Process:
+                name_type = NameType.Process
+            else:
+                name_type = NameType.Local
+
+            for arg in node.args:
+                self.current_scope.add_name(arg.name, name_type)
+
+    def visit_YieldFromStmt(self, node : dast.YieldFromStmt):
+        if isinstance(self.current_scope.ast, dast.Function):
+            self.current_scope.is_generator = True
+        else:
+            assert("Yield can be only used in function")
+
+    def visit_YieldStmt(self, node : dast.YieldStmt):
+        if isinstance(self.current_scope.ast, dast.Function):
+            self.current_scope.is_generator = True
+        else:
+            assert("Yield can be only used in function")
+
+    def visit_AssignmentStmt(self, node : dast.AssignmentStmt):
+        assert(node.targets is not None)
+        if len(node.targets) == 0:
+            pass
+        for target in node.targets:
+            names = AssignNameFinder.run(target, self.current_scope)
+            for name in names:
+                self.assign_to_name(name)
+
+    def visit_ForStmt(self, node : dast.ForStmt):
+        names = AssignNameFinder.run(node.domain.pattern, self.current_scope)
+        for name in names:
+            self.assign_to_name(name)
+
+        self.generic_visit(node)
+
+    def visit_ImportFromStmt(self, node : dast.ImportFromStmt):
+        for import_item in node.items:
+            if import_item.asname is not None:
+                self.assign_to_name(import_item.asname)
+            else:
+                self.assign_to_name(import_item.name)
+
+    def visit_ImportStmt(self, node : dast.ImportStmt):
+        for import_item in node.items:
+            if import_item.asname is not None:
+                self.assign_to_name(import_item.asname)
+            else:
+                self.assign_to_name(import_item.name)
+
 
 class ScopeBuilder(utils.NodeVisitor):
     _result = "scopes"
-    _nodebaseclass=dast.AstNode
+    _nodebaseclass=dast.DistNode
 
     def __init__(self):
         super().__init__()
@@ -238,6 +350,8 @@ class ScopeBuilder(utils.NodeVisitor):
         self.top_scope.add_name('len')
         self.top_scope.add_name('list')
         self.top_scope.add_name('print')
+        self.top_scope.add_name('next')
+        self.top_scope.add_name('iter')
 
     def visit_scope(self, node):
         nonlocal_names, global_names = GlobalAndNonLocalFinder.run(node)
@@ -249,83 +363,29 @@ class ScopeBuilder(utils.NodeVisitor):
             if len(self.scopes) == 1:
                 assert(self.top_scope is None)
                 self.init_top_scope()
-            self.generic_visit(node)
-
-    def assign_to_name(self, name, name_type = NameType.Local):
-        result = self.current_scope.lookup_name(name)
-
-        if result is not None:
-            typ, scope = result
-            if typ == NameType.Process:
-                return
-        self.current_scope.add_name(name, name_type)
+            ScopeNameResolver.run(node, self.current_scope)
+            if isinstance(node, dast.Program):
+                self.visit_one_value(node.body)
+            elif isinstance(node, dast.ClassStmt):
+                self.visit_one_value(node.body)
+            elif isinstance(node, dast.Process):
+                self.visit_one_value(node.body)
+                self.visit_one_value(node.events)
+            elif isinstance(node, dast.Function):
+                self.visit_one_value(node.body)
 
     def visit_Program(self, node : dast.Program):
         # create a scope for top-level
         self.visit_scope(node)
 
-    def visit_ClassDef(self, node : dast.ClassDef):
-        if not is_simple_class_arglist(node.args):
-            raise NotImplementedError("Currently only simple class is supported")
-        self.assign_to_name(node.name)
-        if is_process_class(node.args):
-            self.receive_handler_idx = 0
+    def visit_ClassStmt(self, node : dast.ClassStmt):
         self.visit_scope(node)
 
-    def visit_FuncDef(self, node : dast.FuncDef):
-        self.assign_to_name(node.name)
+    def visit_Process(self, node: dast.Process):
         self.visit_scope(node)
 
-    def visit_TypedArgList(self, node : dast.ArgList):
-        if self.current_scope.type == ScopeType.ReceiveHandler:
-            for arg in node.args:
-                if arg.name == 'msg' or arg.name == 'from_':
-                    names = AssignNameFinder.run(arg.value, self.current_scope)
-                    for name in names:
-                        self.assign_to_name(name, NameType.HandlerPattern)
-        else:
-            if self.current_scope.type == ScopeType.ProcessSetup:
-                target_scope = self.current_scope.parent
-                name_type = NameType.Process
-            else:
-                target_scope = self.current_scope
-                name_type = NameType.Local
+    def visit_Function(self, node : dast.Function):
+        self.visit_scope(node)
 
-            for arg in node.args:
-                target_scope.add_name(arg.name, name_type)
-
-    def visit_YieldFrom(self, node : dast.YieldFrom):
-        if isinstance(self.current_scope.ast, dast.FuncDef):
-            self.current_scope.is_generator = True
-        else:
-            assert("Yield can be only used in function")
-
-    def visit_YieldExpr(self, node : dast.YieldExpr):
-        if isinstance(self.current_scope.ast, dast.FuncDef):
-            self.current_scope.is_generator = True
-        else:
-            assert("Yield can be only used in function")
-
-    def visit_ExprStmt(self, node : dast.ExprStmt):
-        assert(node.target_list is not None)
-        if len(node.target_list) == 0:
-            pass
-        for target in node.target_list:
-            names = AssignNameFinder.run(target, self.current_scope)
-            for name in names:
-                self.assign_to_name(name)
-
-    def visit_ForStmt(self, node : dast.ForStmt):
-        names = AssignNameFinder.run(node.target, self.current_scope)
-        for name in names:
-            self.assign_to_name(name)
-
-        self.generic_visit(node)
-
-    def visit_ImportStmt(self, node : dast.ImportStmt):
-        for import_item in node.imported_as:
-            if import_item.asname is not None:
-                self.assign_to_name(import_item.asname)
-            else:
-                for module in import_item.name:
-                    self.assign_to_name(module)
+    def visit_EventHandler(self, node : dast.EventHandler):
+        self.visit_scope(node)

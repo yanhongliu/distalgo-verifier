@@ -2,11 +2,18 @@ import argparse
 import os
 import sys
 
-from .frontend import Parser, Translator
+from .utils import NodeDump, DefaultLogger
+from .frontend import Translator
 from .opt import *
 from .target.tlaplus import CodeGen
 
-DEBUG=True
+from da.compiler import daast_from_str
+
+class DASTNodeDump(NodeDump):
+    def visit_Process(self, node):
+        self.dump_visit(node, ["body", "events"], None)
+    def visit_Program(self, node):
+        self.dump_visit(node, ["body"], None)
 
 def dpyfile_to_tla(infile, outfile=None):
     filename = os.path.basename(infile)
@@ -17,27 +24,36 @@ def dpyfile_to_tla(infile, outfile=None):
 
     with open(infile, "r") as f:
         source = f.read()
-        parser = Parser()
-        ast = parser.parse(source, infile)
+        daast = daast_from_str(source, purename)
+        DefaultLogger.is_debug = True
+        #parser = Parser()
+        #ast = parser.parse(source, infile)
+        #print(ast)
+        # DASTNodeDump.run(daast)
         translator = Translator()
-        modules = [translator.run(purename, ast)]
+        modules = [translator.run(purename, daast)]
         pass_manager = PassManager()
         # add pass
         pass_manager.add_pass(BuildCFGPass())
-        # pass_manager.add_pass(DumpFunction())
+        #pass_manager.add_pass(DumpFunction())
         pass_manager.add_pass(NormalizePass())
-        pass_manager.add_pass(ReplaceBuiltinFunctionPass())
         # pass_manager.add_pass(DumpFunction())
         pass_manager.add_pass(TagVariables())
-        pass_manager.add_pass(TypeAnalysis())
-        # pass_manager.add_pass(DumpFunction())
         pass_manager.add_pass(ConstantProp())
-        # pass_manager.add_pass(DumpFunction())
-        pass_manager.add_pass(Inliner())
+        pass_manager.add_pass(ReplaceBuiltinFunctionPass())
+        pass_manager.add_pass(InsertIfElse())
+        pass_manager.add_pass(TagVariables())
+        pass_manager.add_pass(ConstantProp())
         pass_manager.add_pass(SSAPass())
+        #pass_manager.add_pass(DumpFunction())
         pass_manager.add_pass(SimplifyCFGPass())
-        # pass_manager.add_pass(DumpFunction())
+        #pass_manager.add_pass(DumpFunction())
+        pass_manager.add_pass(Inliner())
+        pass_manager.add_pass(SimplifyCFGPass())
+        pass_manager.add_pass(TagVariables())
+        #pass_manager.add_pass(DumpFunction())
         pass_manager.add_pass(GetVariablesPass())
+        pass_manager.add_pass(DumpFunction())
         pass_manager.run(modules)
 
         codegen = CodeGen(pass_manager)

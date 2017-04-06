@@ -1,5 +1,6 @@
 from ... import opt, ir
-from ...frontend import dast, ScopeType
+from ...frontend import ScopeType
+from da.compiler import dast
 from .tlaast import *
 from .tla_translator import *
 import sys
@@ -51,7 +52,9 @@ class CodeGen(object):
                         names.add(function.scope.gen_name("yield_ret_pc"))
                     if isinstance(function.ast_node, dast.Program):
                         continue
-                    if isinstance(function.ast_node, dast.ClassDef):
+                    if isinstance(function.ast_node, dast.ClassStmt):
+                        continue
+                    if isinstance(function.ast_node, dast.Process):
                         continue
                     # skip main for now
                     if function.scope.type == ScopeType.Main:
@@ -70,11 +73,10 @@ class CodeGen(object):
                 for function in module.functions:
                     if isinstance(function.ast_node, dast.Program):
                         self.gen_program(function)
-                    elif isinstance(function.ast_node, dast.ClassDef):
-                        if function.scope.type == ScopeType.Process:
-                            self.gen_process(function)
-                        else:
-                            self.gen_entry_function(function)
+                    elif isinstance(function.ast_node, dast.ClassStmt):
+                        self.gen_entry_function(function)
+                    elif isinstance(function.ast_node, dast.Process):
+                        self.gen_process(function, module)
                     elif function.scope.type == ScopeType.Main:
                         self.gen_main_function(function)
 
@@ -89,7 +91,7 @@ class CodeGen(object):
         if len(function.basicblocks) != 2:
             return False
         for inst in function.basicblocks[0].ir:
-            if isinstance(inst, ir.Call) and isinstance(inst.func.ast_node, dast.ClassDef):
+            if isinstance(inst, ir.Call) and (isinstance(inst.func.ast_node, dast.ClassStmt) or isinstance(inst.func.ast_node, dast.Process)):
                 continue
             elif isinstance(inst, ir.Assign) and inst.op == '=' and isinstance(inst.target, ir.IRName) and isinstance(inst.expr, ir.Function):
                 continue
@@ -105,7 +107,7 @@ class CodeGen(object):
                 isinstance(i.target, ir.IRName) \
                 for i in process.basicblocks[0].ir)
 
-    def gen_process(self, process):
+    def gen_process(self, process, module):
         assert(self.is_simple_process_class(process))
 
         for i in process.basicblocks[0].ir:
@@ -116,11 +118,12 @@ class CodeGen(object):
                 self.gen_entry_function(i.expr)
 
         message_handler = []
-        for i in process.basicblocks[0].ir:
-            if isinstance(i, ir.Assign) and i.expr.scope.type == ScopeType.ReceiveHandler:
-                message_handler.append(i.expr)
 
-        self.gen_message_handler(message_handler)
+        for function in module.functions:
+            if function.scope.parent is process.scope and function.scope.type == ScopeType.ReceiveHandler:
+                message_handler.append(function)
+
+        self.gen_message_handler(process, message_handler)
 
     def gen_main_function(self, func : ir.Function):
         pass
@@ -131,5 +134,5 @@ class CodeGen(object):
     def gen_entry_function(self, func : ir.Function):
         self.translator.translate_function(func)
 
-    def gen_message_handler(self, func):
-        self.translator.translate_message_handler(func)
+    def gen_message_handler(self, process, func):
+        self.translator.translate_message_handler(process, func)

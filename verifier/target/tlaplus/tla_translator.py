@@ -6,6 +6,7 @@ from verifier.frontend import NameType, ScopeType
 from verifier.opt import *
 from verifier import types
 from .fill_unchange import Fill
+from da.compiler import dast
 
 def check_loop(block, path):
     if block in path:
@@ -18,16 +19,20 @@ def check_loop(block, path):
     return False
 
 TlaOperatorMap = {
-    '>' : TLA_GT,
-    '<' : TLA_LT,
-    '==' : TLA_EQ,
-    'and' : TLA_AND,
-    'or' : TLA_OR,
-    '%' : TLA_MOD,
-    '-' : TLA_MINUS,
-    '!=' : TLA_NEQ,
-    'each' : TLA_ALL,
-    'some' : TLA_EXISTS,
+    dast.GtOp : TLA_GT,
+    dast.LtOp : TLA_LT,
+    dast.EqOp : TLA_EQ,
+    dast.AndOp : TLA_AND,
+    dast.OrOp : TLA_OR,
+    dast.ModOp : TLA_MOD,
+    dast.DivOp : TLA_DIV,
+    dast.NotOp : TLA_NOT,
+    dast.AddOp : TLA_ADD,
+    dast.SubOp : TLA_MINUS,
+    dast.NotEqOp : TLA_NEQ,
+    dast.UniversalOp : TLA_ALL,
+    dast.ExistentialOp : TLA_EXISTS,
+    dast.InOp : TLA_IN,
 }
 
 class GetIRNames(utils.NodeVisitor):
@@ -40,7 +45,8 @@ class GetIRNames(utils.NodeVisitor):
 
 class PatternTranslator(utils.NodeVisitor):
     _nodebaseclass=ir.Value
-    def __init__(self, expr, translator, is_assign = False):
+    def __init__(self, expr, translator, freevar=None, is_assign = False):
+        self.force_freevars = freevar
         self.stack = []
         self.constrains = []
         self.freevar = []
@@ -75,18 +81,33 @@ class PatternTranslator(utils.NodeVisitor):
                                       TlaConstantExpr(node.value)))
 
     def is_freevar(self, name):
+        if self.force_freevars is not None and name in self.force_freevars:
+            return True
         for names in reversed(self.translator.quantifier_stack):
             if name in names:
                 return False
         return True
 
+    def escape_name(self, name, create=False):
+        for (_, n, escaped_name) in self.freevar:
+            if n == name:
+                return escaped_name
+
+        if self.force_freevars is None or name not in self.force_freevars:
+            for names in reversed(self.translator.quantifier_stack):
+                if name in names:
+                    return names[name]
+
+        if create:
+            name = self.translator.get_tempname(name)
+        return name
+
     def visit_IRName(self, node: ir.IRName):
         if self.is_freevar(node.name) and (node.name_type == NameType.HandlerPattern or node.name_type == NameType.Pattern or self.is_assign):
-            # FIXME, what if same free var appear twice?
-            self.freevar.append((self.indexed_expr(), node.name))
+            self.freevar.append((self.indexed_expr(), node.name, self.escape_name(node.name, True)))
         else:
             if node.name_type == NameType.HandlerPattern or node.name_type == NameType.Pattern:
-                v = TlaSymbol(node.name)
+                v = TlaSymbol(self.escape_name(node.name, False))
             else:
                 v = apply_expr(node.name, "self")
             self.constrains.append(tla_eq(self.indexed_expr(),
@@ -238,7 +259,6 @@ class Action(object):
 
     def from_call(self, call: ir.Call):
         if not isinstance(call.func, ir.Function):
-            print(call.func)
             raise NotImplementedError()
         ret_addr_name = call.func.scope.gen_name("ret_pc")
         exprs = [self.check_pc(), except_expr_helper(ret_addr_name, TlaConstantExpr(self.next_name)), except_expr_helper('pc', TlaConstantExpr(call.func.entry_label()))]
@@ -271,6 +291,16 @@ class Action(object):
     def to_tla(self):
         return self.tla.to_tla()
 
+class NameCollector(utils.NodeVisitor):
+    _nodebaseclass = ir.Value
+
+    def __init__(self):
+        self.result = set()
+
+    def visit_IRName(self, node : ir.IRName):
+        self.result.add(node.name)
+
+
 class ExprTranslator(utils.NodeVisitor):
     _nodebaseclass = ir.Value
     def __init__(self, rwtracker, translator):
@@ -280,12 +310,16 @@ class ExprTranslator(utils.NodeVisitor):
     def visit(self, node):
         result = super().visit(node)
         if result is None:
-            print(node)
+            utils.debug(node)
             raise NotImplementedError()
         return result
 
     def visit_Call(self, node : ir.Call):
+        return TlaPlaceHolder(node)
         pass
+
+    def visit_Max(self, node : ir.Max):
+        return TlaInstantiationExpr(TlaSymbol("Max"), [self.visit(node.value)])
 
     def visit_Constant(self, node : ir.Constant):
         return TlaConstantExpr(node.value)
@@ -298,21 +332,29 @@ class ExprTranslator(utils.NodeVisitor):
 
     def visit_IRName(self, node : ir.IRName):
         if node.name_type == NameType.Pattern or node.name_type == NameType.HandlerPattern:
+            for names in reversed(self.translator.quantifier_stack):
+                if node.name in names:
+                    return TlaSymbol(names[node.name])
+
             return TlaSymbol(node.name)
         else:
             # fake ssa-ize
             return self.rwtracker.get_ssa_name(node.name, read=True)
 
     def visit_Cardinality(self, node : ir.Cardinality):
-        # TODO: SET
-        return TlaInstantiationExpr(TlaSymbol("Len"), [self.visit(node.operands[0])])
+        # FIXME: use type
+        expr = self.visit(node.expr)
+
+        if isinstance(node.expr, ir.SetComp):
+            return TlaInstantiationExpr(TlaSymbol("Cardinality"), [expr])
+        else:
+            return TlaInstantiationExpr(TlaSymbol("Len"), [expr])
 
     def visit_Received(self, node : ir.Received):
-        rcvd = apply_expr('rcvd', 'self')
-        temp = TlaSymbol(self.translator.get_tempname("_value"))
-        constrains, freevar = PatternTranslator.run(node.pattern, temp, self.translator)
-        tla = tla_exists(tla_in(temp, rcvd), tla_and(constrains))
-        return tla
+        return apply_expr('rcvd', 'self')
+
+    def visit_Sent(self, node : ir.Sent):
+        return apply_expr('sent', 'self')
 
     def visit_Append(self, node : ir.Append):
         return tla_append(self.visit(node.container), self.visit(node.elem))
@@ -342,11 +384,14 @@ class ExprTranslator(utils.NodeVisitor):
     def visit_ProcessId(self, node):
         return TlaSymbol("self")
 
-    def visit_Clock(self, node):
+    def visit_Clock(self, node : ir.Clock):
         return apply_expr("clock", "self")
 
-    def visit_Set(self, node):
+    def visit_Set(self, node : ir.Set):
         return TlaSetExpr(self.visit_one_value(node.operands))
+
+    def visit_SubScript(self, node : ir.SubScript):
+        return TlaIndexExpr(self.visit_one_value(node.value), self.visit_one_value(node.subscript))
 
     def visit_Tuple(self, node : ir.Tuple):
         values = self.visit_one_value(node.operands)
@@ -355,57 +400,58 @@ class ExprTranslator(utils.NodeVisitor):
     def visit_LogicOp(self, node : ir.LogicOp):
         return TlaAndOrExpr(TlaOperatorMap[node.op], self.visit_one_value(node.operands))
 
+    def visit_pattern(self, domain, predicate, force_freevars=None):
+        temp = TlaSymbol(self.translator.get_tempname("_value"))
+        constrains, freevars = PatternTranslator.run(domain.left, temp, self.translator, freevar=force_freevars)
+        self.translator.quantifier_stack.append({var : escaped_name for (_, var, escaped_name) in freevars})
+        domain_expr = self.visit(domain.right)
+        filtered_domain_expr = TlaSetCompositionExpr(temp, domain_expr, tla_and(constrains) if constrains else TlaConstantExpr(True))
+        freevar_def = []
+        for (val, var, escaped_name) in freevars:
+            freevar_def.append(TlaDefinitionStmt(TlaSymbol(escaped_name), [], val))
+
+        has_predicate = self.visit(predicate)
+        return temp, filtered_domain_expr, freevar_def, has_predicate
+
     def visit_Quantifier(self, node : ir.Quantifier):
-        domain = node.domain
-        if isinstance(domain, ir.Received):
-            constrains, freevars = PatternTranslator.run(domain.pattern, TlaSymbol("_value"), self.translator)
-            self.translator.quantifier_stack.append({var for (_, var) in freevars})
-            rcvd = apply_expr('rcvd', 'self')
-            filtered_rcvd = TlaSetCompositionExpr(TlaSymbol("_value"), rcvd, tla_and(constrains))
-            freevar_def = []
-            for (val, var) in freevars:
-                freevar_def.append(TlaDefinitionStmt(TlaSymbol(var), [], val))
+        for domain in node.operands[1:]:
+            if isinstance(domain, ir.BinaryOp) and domain.op is dast.InOp:
+                temp, filtered_domain_expr, freevar_def, has_predicate = self.visit_pattern(domain, node.predicate)
+                if len(freevar_def) > 0:
+                    full_predicate = TlaLetExpr(freevar_def, has_predicate)
+                else:
+                    full_predicate = has_predicate
 
-            has_predicate = self.visit(node.predicate)
-            full_predicate = TlaLetExpr(freevar_def, has_predicate)
-            self.translator.quantifier_stack.pop()
-            return TlaPredicateExpr(TlaOperatorMap[node.op], tla_in(TlaSymbol("_value"), filtered_rcvd), full_predicate)
-        elif isinstance(domain, ir.BinaryOp) and domain.op == 'in':
-            constrains, freevars = PatternTranslator.run(domain.left, TlaSymbol("_value"), self.translator)
-            self.translator.quantifier_stack.append({var for (_, var) in freevars})
-            domain_expr = self.visit(domain.right)
-            filtered_domain_expr = TlaSetCompositionExpr(TlaSymbol("_value"), domain_expr, tla_and(constrains) if constrains else TlaConstantExpr(True))
-            freevar_def = []
-            for (val, var) in freevars:
-                freevar_def.append(TlaDefinitionStmt(TlaSymbol(var), [], val))
+                self.translator.quantifier_stack.pop()
+                return TlaPredicateExpr(TlaOperatorMap[node.op], tla_in(temp, filtered_domain_expr), full_predicate)
+            return TlaPlaceHolder(node)
 
-            has_predicate = self.visit(node.predicate)
-            full_predicate = TlaLetExpr(freevar_def, has_predicate)
-            self.translator.quantifier_stack.pop()
-            return TlaPredicateExpr(TlaOperatorMap[node.op], tla_in(TlaSymbol("_value"), filtered_domain_expr), full_predicate)
-        return TlaPlaceHolder(node)
-
-class CheckSpecialBranchInstruction(utils.NodeVisitor):
-    def __init__(self):
-        self.result = False
-
-    def visit(self, node):
-        if self.result:
-            return
+    def visit_SetComp(self, node : ir.SetComp):
+        domain = node.conditions[0]
+        if (len(node.conditions) > 1):
+            predicate = node.conditions[1]
         else:
-            super().visit(node)
+            predicate = ir.Constant(True)
 
-    def visit_Call(self, node):
-        self.result = True
+        freevars = NameCollector.run(node.elem)
 
-    def visit_Label(self, node):
-        self.result = True
+        temp, filtered_domain_expr, freevar_def, has_predicate = self.visit_pattern(domain, predicate, freevars)
+        elem = self.visit(node.elem)
+        self.translator.quantifier_stack.pop()
+        return TlaSetCompositionExpr(TlaLetExpr(freevar_def, elem), None, tla_in(temp, filtered_domain_expr))
+
+    def visit_IfElse(self, node : ir.IfElse):
+        # Hack
+        condition = self.visit(node.condition)
+        if isinstance(node.condition, ir.SetComp):
+            condition = tla_gt(TlaInstantiationExpr(TlaSymbol("Cardinality"), [self.visit(node.operands[0])]), TlaConstantExpr(0))
+        return TlaIfExpr(condition, self.visit(node.expr), self.visit(node.elseexpr))
 
 class PatternToType(utils.NodeVisitor):
     _nodebaseclass = ir.Value
 
     def __init__(self):
-        pass
+        self.idx = 1
 
     def visit_Tuple(self, node : ir.Tuple):
         return types.Tuple(self.visit_one_value(node.operands))
@@ -416,6 +462,9 @@ class PatternToType(utils.NodeVisitor):
 
     def visit_IRName(self, node: ir.IRName):
         return types.Unknown(node.origin_name)
+
+    def visit_FreePattern(self, node : ir.FreePattern):
+        return types.Unknown(str(self.idx))
 
 def translate_function_simple_one_block(top_exprs, block, translator, has_send):
     insts = block.ir
@@ -574,39 +623,40 @@ class Translator(object):
             for func2 in message_handlers[i+1:]:
                 result, mapping = types.Unifier.run(pattern_type[func], pattern_type[func2])
                 if result:
-                    print(func.msg_pattern)
-                    print(func2.msg_pattern)
-                    print(mapping)
                     return True
 
         return False
 
-    def translate_message_handler(self, message_handlers):
+    def translate_message_handler(self, process, message_handlers):
         # TODO, maybe move check to somewhere else
         if self.check_message_handler_overlap(message_handlers) or \
            not all(self.check_translable_as_single_action_restricted(func) for func in message_handlers):
+
+            utils.debug([(func, self.check_translable_as_single_action_restricted(func)) for func in message_handlers])
             raise NotImplementedError()
 
-        msg = TlaFieldExpr(TlaSymbol("msg"), TlaSymbol("content"))
+        msg = TlaSymbol("msg")
 
         top_exprs = []
         exprs = top_exprs
 
         for function in message_handlers:
             constrains, freevars = PatternTranslator.run(function.msg_pattern, msg, self)
+            self.quantifier_stack.append({var : escaped_name for (_, var, escaped_name) in freevars})
             freevar_def = []
-            for (val, var) in freevars:
-                freevar_def.append(TlaDefinitionStmt(TlaSymbol(var), [], val))
+            for (val, var, escaped_name) in freevars:
+                freevar_def.append(TlaDefinitionStmt(TlaSymbol(escaped_name), [], val))
             handler_exprs = []
             full_predicate = TlaLetExpr(freevar_def, tla_and(handler_exprs))
             translate_function_simple_one_block(handler_exprs, function.basicblocks[0], self, False)
 
+            self.quantifier_stack.pop()
             next_exprs = []
             exprs.append(TlaIfExpr(tla_and(constrains), full_predicate, tla_and(next_exprs)))
             exprs = next_exprs
 
         exprs.append(except_expr_helper("msgQueue", inst_expr("Tail", TlaSymbol("@"))))
-        yield_action = yield_point_action(message_handlers[0].scope.get_process_scope(), tla_and(top_exprs),
+        yield_action = yield_point_action(process.scope, tla_and(top_exprs),
                                  self.codegen.need_rcvd())
         Fill.run(yield_action, self.codegen.names)
         self.codegen.defines.append(yield_action)
