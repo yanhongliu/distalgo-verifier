@@ -4,11 +4,15 @@ from verifier.utils import NodeVisitor
 class Fill(NodeVisitor):
     _nodebaseclass = TlaAST
 
-    def __init__(self, vars):
+    def __init__(self, codegen):
+        self.vars = codegen.names
         self.stack = []
         self.level = 1
         self.changed = set()
-        self.vars = vars
+        self.need_sent = codegen.need_sent()
+
+    def visit_TlaLetExpr(self, node : TlaLetExpr):
+        self.visit_one_value(node.expr)
 
     def visit_TlaAndOrExpr(self, node):
         push = False
@@ -29,6 +33,8 @@ class Fill(NodeVisitor):
     def visit_TlaInstantiationExpr(self, node):
         if node.name.name == 'Send':
             self.changed.add('msgQueue')
+            if self.need_sent:
+                self.changed.add('sent')
         self.generic_visit(node)
 
     def visit_TlaSymbol(self, node):

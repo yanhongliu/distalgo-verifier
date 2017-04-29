@@ -414,6 +414,13 @@ class ScopeTranslator(utils.NodeVisitor):
         # TODO start, top
         return Range(value)
 
+    def handle_randint(self, node, args, vargs, args2, kwargs, kwarg):
+        value, = self.check_argument(argument_template('object'), args, vargs, args2, kwargs, kwarg)
+        if value is None:
+            raise SyntaxError("randint")
+        print(value)
+        return RandomSelect(value)
+
     def visit_PatternExpr(self, node: dast.PatternExpr):
         return self.visit_one_value(node.pattern)
 
@@ -459,16 +466,25 @@ class ScopeTranslator(utils.NodeVisitor):
 
     def visit_AwaitStmt(self, node : dast.AwaitStmt):
         await_cond_block = self.new_block(self.new_label("await"))
-        await_block = self.new_block(self.new_label("await_body"))
+        await_block = self.new_block(self.new_label("await_loop"))
+        await_body_block = None
+        if len(node.branches[0].body):
+            await_body_block = self.new_block(self.new_label("await_body"))
         end_block = self.new_block(self.new_label("await_end"))
         with BlockSetter(self, await_cond_block):
             self.append_inst(Label(node.label))
             # FIXME
+
             value = self.visit(node.branches[0].condition)
-            self.append_inst(CondBranch(value, end_block, await_block))
+            next_block = await_body_block if len(node.branches[0].body) > 0 else end_block
+            self.append_inst(CondBranch(value, next_block, await_block))
 
         with BlockSetter(self, await_block):
             self.append_inst(Branch(await_cond_block))
+        if await_body_block:
+            with BlockSetter(self, await_body_block):
+                self.visit_one_value(node.branches[0].body)
+                self.append_inst(Branch(end_block))
         self.set_block(end_block)
         return
 
@@ -490,7 +506,7 @@ class ScopeTranslator(utils.NodeVisitor):
             return result
 
     def visit_CallExpr(self, node : dast.CallExpr):
-        builtin_function = {"int", "len", "range", "iter", "next" # Python builtin
+        builtin_function = {"int", "len", "range", "iter", "next", "randint" # Python builtin
                             }
         args = [self.visit(arg) for arg in node.args]
         vargs = self.visit(node.starargs) if node.starargs is not None else None
@@ -575,7 +591,7 @@ class Translator(object):
             utils.debug(scope)
         module = Module(name)
 
-        functions = dict()
+        functions = collections.OrderedDict()
 
         for node, scope in self.scopes.items():
             args = []

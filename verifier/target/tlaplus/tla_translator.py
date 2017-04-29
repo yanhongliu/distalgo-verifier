@@ -35,6 +35,20 @@ TlaOperatorMap = {
     dast.InOp : TLA_IN,
 }
 
+class ReplaceFreevar(utils.NodeTransformer):
+    _nodebaseclass = TlaAST
+
+    def __init__(self, freevar_def):
+        self.freevar_map = dict()
+        for define in freevar_def:
+            self.freevar_map[define.name.name] = define.expr
+
+    def visit_TlaSymbol(self, node : TlaSymbol):
+        if node.name in self.freevar_map:
+            return self.freevar_map[node.name]
+        else:
+            return node
+
 class GetIRNames(utils.NodeVisitor):
     def __init__(self):
         self.result = set()
@@ -328,6 +342,14 @@ class ExprTranslator(utils.NodeVisitor):
         return TlaTupleExpr(self.visit_one_value(node.operands))
 
     def visit_BinaryOp(self, node : ir.BinaryOp):
+        lhs = self.visit(node.operands[0])
+        rhs = self.visit(node.operands[1])
+        # Hack for no type info
+        if node.op is dast.LtOp or node.op is dast.GtOp:
+            if isinstance(lhs, TlaTupleExpr) or isinstance(rhs, TlaTupleExpr):
+                op = "\prec" if node.op is dast.LtOp else "\succ"
+                return TlaBinaryExpr(op, self.visit(node.operands[0]), self.visit(node.operands[1]))
+
         return TlaBinaryExpr(TlaOperatorMap[node.op], self.visit(node.operands[0]), self.visit(node.operands[1]))
 
     def visit_IRName(self, node : ir.IRName):
@@ -372,7 +394,8 @@ class ExprTranslator(utils.NodeVisitor):
                                                    inst_expr('SubSeq', temp_container, TlaBinaryExpr(TLA_ADD, temp_idx, TlaConstantExpr(2)), inst_expr('Len', temp_container)))]))
 
     def visit_RandomSelect(self, node : ir.RandomSelect):
-        return TlaChooseExpr(tla_in(TlaSymbol('_random'), self.visit(node.operands[0])), TlaConstantExpr(True))
+        temp = self.translator.get_tempname("_random")
+        return TlaChooseExpr(tla_in(TlaSymbol(temp), self.visit(node.operands[0])), TlaConstantExpr(True))
 
     def visit_Range(self, node : ir.Range):
         # FIXME, it's actually seq
@@ -390,15 +413,26 @@ class ExprTranslator(utils.NodeVisitor):
     def visit_Set(self, node : ir.Set):
         return TlaSetExpr(self.visit_one_value(node.operands))
 
+    def visit_IntegerSet(self, node : ir.Set):
+        return TlaIntegerSetExpr(self.visit_one_value(node.operands[0]), self.visit_one_value(node.operands[1]))
+
     def visit_SubScript(self, node : ir.SubScript):
-        return TlaIndexExpr(self.visit_one_value(node.value), self.visit_one_value(node.subscript))
+        return TlaIndexExpr(self.visit_one_value(node.value), TlaBinaryExpr(TLA_ADD, TlaConstantExpr(1), self.visit_one_value(node.subscript)))
 
     def visit_Tuple(self, node : ir.Tuple):
         values = self.visit_one_value(node.operands)
         return TlaTupleExpr(values)
 
     def visit_LogicOp(self, node : ir.LogicOp):
-        return TlaAndOrExpr(TlaOperatorMap[node.op], self.visit_one_value(node.operands))
+        ops = self.visit_one_value(node.operands)
+        if all(isinstance(op, TlaSetExpr) or isinstance(op, TlaSetCompositionExpr) for op in ops):
+            if node.op is dast.AndOp:
+                name = "SetAnd"
+            else:
+                name = "SetOr"
+            return TlaInstantiationExpr(TlaSymbol(name), [TlaTupleExpr(ops)])
+        else:
+            return TlaAndOrExpr(TlaOperatorMap[node.op], ops)
 
     def visit_pattern(self, domain, predicate, force_freevars=None):
         temp = TlaSymbol(self.translator.get_tempname("_value"))
@@ -430,20 +464,28 @@ class ExprTranslator(utils.NodeVisitor):
         domain = node.conditions[0]
         if (len(node.conditions) > 1):
             predicate = node.conditions[1]
+            ignore = False
         else:
             predicate = ir.Constant(True)
+            ignore = True
 
         freevars = NameCollector.run(node.elem)
 
         temp, filtered_domain_expr, freevar_def, has_predicate = self.visit_pattern(domain, predicate, freevars)
         elem = self.visit(node.elem)
         self.translator.quantifier_stack.pop()
-        return TlaSetCompositionExpr(TlaLetExpr(freevar_def, elem), None, tla_in(temp, filtered_domain_expr))
+        if ignore:
+            return TlaSetCompositionExpr(TlaLetExpr(freevar_def, elem), None, tla_in(temp, filtered_domain_expr))
+        else:
+            has_predicate = ReplaceFreevar.run(has_predicate, freevar_def)
+            filtered_domain_expr.expr = tla_and([filtered_domain_expr.expr, has_predicate])
+            return TlaSetCompositionExpr(TlaLetExpr(freevar_def, elem), None, tla_in(temp, filtered_domain_expr))
 
     def visit_IfElse(self, node : ir.IfElse):
         # Hack
         condition = self.visit(node.condition)
-        if isinstance(node.condition, ir.SetComp):
+        if isinstance(node.condition, ir.SetComp) or \
+           (isinstance(condition, TlaInstantiationExpr) and (condition.name.name == "SetOr" or condition.name.name == "SetAnd")):
             condition = tla_gt(TlaInstantiationExpr(TlaSymbol("Cardinality"), [self.visit(node.operands[0])]), TlaConstantExpr(0))
         return TlaIfExpr(condition, self.visit(node.expr), self.visit(node.elseexpr))
 
@@ -613,7 +655,7 @@ class Translator(object):
                 general_action()
 
         for a in actions:
-            Fill.run(a.tla, self.codegen.names)
+            Fill.run(a.tla, self.codegen)
             self.codegen.defines.append(a.tla)
 
     def check_message_handler_overlap(self, message_handlers):
@@ -658,7 +700,7 @@ class Translator(object):
         exprs.append(except_expr_helper("msgQueue", inst_expr("Tail", TlaSymbol("@"))))
         yield_action = yield_point_action(process.scope, tla_and(top_exprs),
                                  self.codegen.need_rcvd())
-        Fill.run(yield_action, self.codegen.names)
+        Fill.run(yield_action, self.codegen)
         self.codegen.defines.append(yield_action)
 
 

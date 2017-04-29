@@ -87,6 +87,7 @@ def send_action(need_sent=True):
                                                                          apply_expr("msgQ", "proc")))),
             ]
     if need_sent:
+        msg = TlaTupleExpr([TlaConstantExpr('sent'), TlaTupleExpr([clock_expr(), _("proc"), _("self")]), _("content")])
         exprs.append(except_expr_helper("sent", tla_union(TlaApplyExpr(_("sent"), _("self")), TlaSetCompositionExpr(msg, None, tla_in(_("proc"), _("dest"))))))
     return TlaDefinitionStmt(_("Send"),
                              [_("self"), _("content"), _("dest"), _("msgQ")],
@@ -102,7 +103,12 @@ def yield_point_action(scope, expr, need_rcvd=True):
                                                                  _("@")))),
              ]
     if need_rcvd:
-        rcvd_msg = TlaTupleExpr([TlaConstantExpr('rcvd'), TlaIndexExpr(_("msg"), TlaConstantExpr(1)), TlaIndexExpr(_("msg"), TlaConstantExpr(2))])
+        envelop = TlaIndexExpr(_("msg"), TlaConstantExpr(2))
+        new_envelop = TlaTupleExpr([TlaIndexExpr(envelop, TlaConstantExpr(1)),
+            TlaIndexExpr(envelop, TlaConstantExpr(3)),
+            TlaIndexExpr(envelop, TlaConstantExpr(2))])
+
+        rcvd_msg = TlaTupleExpr([TlaConstantExpr('rcvd'), new_envelop, TlaIndexExpr(_("msg"), TlaConstantExpr(3))])
         exprs.append(except_expr_helper("rcvd", tla_union(apply_expr("rcvd", "self"), TlaSetExpr([rcvd_msg]))))
     exprs.append(expr)
     return TlaDefinitionStmt(_(scope.gen_name("yield")),

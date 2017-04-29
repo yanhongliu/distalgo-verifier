@@ -67,7 +67,7 @@ class CodeGen(object):
 
                 self.names += sorted(list(names))
                 # only scan through
-                self.defines.append(TlaExtendsStmt(["Integers", "Sequences", "FiniteSets", "TLC"]))
+                self.defines.append(TlaExtendsStmt(["Integers", "Sequences", "FiniteSets", "TLC", "DistAlgoHelper"]))
                 self.defines.append(TlaVariablesStmt(self.names))
                 self.defines.append(send_action(self.need_sent()))
                 for function in module.functions:

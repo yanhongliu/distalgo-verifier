@@ -324,14 +324,14 @@ class ScopeNameResolver(utils.NodeVisitor):
             if import_item.asname is not None:
                 self.assign_to_name(import_item.asname)
             else:
-                self.assign_to_name(import_item.name)
+                self.assign_to_name(import_item.name.name)
 
     def visit_ImportStmt(self, node : dast.ImportStmt):
         for import_item in node.items:
             if import_item.asname is not None:
                 self.assign_to_name(import_item.asname)
             else:
-                self.assign_to_name(import_item.name)
+                self.assign_to_name(import_item.name.name)
 
 
 class ScopeBuilder(utils.NodeVisitor):

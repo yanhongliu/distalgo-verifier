@@ -38,7 +38,7 @@ class Acceptor(process):
         if each(sent(('respond', n2, _)), has= n > n2):
             maxprop = anyof(setof((n, v), sent(('accepted', n, v)),
                                n==max(setof(n, sent(('accepted', n, _))))))
-            send(('respond', n, maxprop), to =p)
+            send(('respond', n, maxprop), to ={p})
 
     def receive(msg= ('accept', n, v)):
         if not some(sent(('respond', n2, _)), has= n2 > n):
@@ -81,7 +81,7 @@ def main():
 
     for p in learners: p.join()
     print('done')
-    da.send(('done',), to= (acceptors|proposers))  # da.send not in da-lang
+    send(('done',), to= (acceptors|proposers))  # da.send not in da-lang
 
 # This is an executable specification of the algorithm described in
 # Lamport, L. (2001).  Paxos Made Simple.  ACM SIGACT News 

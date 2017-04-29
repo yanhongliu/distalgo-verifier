@@ -236,6 +236,11 @@ class Set(Instruction):
         super().__init__(block)
         self.set_operands(items)
 
+class IntegerSet(Instruction):
+    def __init__(self, start, end, block = None):
+        super().__init__(block)
+        self.set_operands([start, end])
+
 class Max(Instruction):
     def __init__(self, item, block = None):
         super().__init__(block)
