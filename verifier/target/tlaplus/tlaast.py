@@ -13,6 +13,7 @@ TLA_LE = "<="
 TLA_MOD = '%'
 TLA_MINUS = '-'
 TLA_ADD = '+'
+TLA_DIV = '\\div'
 
 TLA_CONCAT = "\\o"
 
@@ -247,9 +248,9 @@ class TlaSetCompositionExpr(TlaAST):
     def to_tla(self, indent=0):
         if self.domain is not None:
             return ("""{{{1} \\in {2}:\n"""
-                    """{0}    {3}}}""").format(" " * indent, self.element.to_tla(), self.domain.to_tla(), self.expr.to_tla(indent + 4))
+                    """{0}    {3}}}""").format(" " * indent, self.element.to_tla(indent), self.domain.to_tla(indent), self.expr.to_tla(indent + 4))
         else:
-            return ("""{{{0}: {1}}}""").format(self.element.to_tla(), self.expr.to_tla(indent + 4))
+            return ("""{{{0}: {1}}}""").format(self.element.to_tla(indent), self.expr.to_tla(indent + 4))
 
 #===============================================
 # Function operator
@@ -321,7 +322,7 @@ class TlaLetExpr(TlaAST):
 
     def to_tla(self, indent=0):
         indent_string = " " * indent
-        return ("LET {1}\n"
+        return ("\n{0}LET {1}\n"
                 "{0}IN  {2}").format(indent_string,
                                      ("\n" + (" " * (indent + 4))).join([definition.to_tla(indent + 4) for definition in self.definitions]),
                                      self.expr.to_tla(indent + 4))
@@ -397,7 +398,7 @@ class TlaTupleExpr(TlaAST):
         self.exprs = exprs
 
     def to_tla(self, indent=0):
-        return "<< {0} >>".format(", ".join([expr.to_tla() if expr is not None else "NOOOONE" for expr in self.exprs]))
+        return "<< {0} >>".format(", ".join([expr.to_tla(indent) if expr is not None else "NOOOONE" for expr in self.exprs]))
 
 # S1 x S2 x  ... x Sn    
 # class TlaTupleSetExpr
@@ -457,6 +458,8 @@ class TlaConstantExpr(TlaAST):
             return '"{0}"'.format(self.value)
         elif isinstance(self.value, bool):
             return "TRUE" if self.value else "FALSE"
+        elif self.value is None:
+            return "<<>>"
         return str(self.value)
 
 class TlaIntegerSetExpr(TlaAST):

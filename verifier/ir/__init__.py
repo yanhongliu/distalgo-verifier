@@ -36,6 +36,13 @@ ir = [
     'Quantifier',
     'LogicOp',
     'Append',
+    'FreePattern',
+    'Sent',
+    'SetComp',
+    'Max',
+    'Min',
+    'IfElse',
+    'IntegerSet',
 ]
 
 __all__ = ir + ['BasicBlock', 'Module', 'Function', 'IRName']

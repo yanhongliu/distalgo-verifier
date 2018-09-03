@@ -1,6 +1,12 @@
 import verifier.ir
 from functools import reduce
 
+class SliceMaker(object):
+    def __getitem__(self, item):
+        return item
+
+make_slice = SliceMaker()
+
 def get_op_bind(n):
     def _get(o):
         return o.get_op(n)
@@ -49,6 +55,9 @@ class Instruction(Value):
         assert block is None or block is BasicBlock
         self.parent = block
         self.operands = []
+
+    def clone(self):
+        return type(self)(*[op.clone() for op in self.operands])
 
     def get_op(self, n):
         if n is tuple:
@@ -128,8 +137,15 @@ class Instruction(Value):
 
 class Label(Instruction):
     def __init__(self, label, block = None):
+
         super().__init__(block)
         self.label = label
+
+    def __repr__(self):
+        return "<{0} {1}>".format(self.__class__.__name__, self.label)
+
+    def clone(self):
+        return type(self)(self.label)
 
 class Variable(Value):
     def __init__(self, name):
@@ -138,6 +154,9 @@ class Variable(Value):
 
     def __repr__(self):
         return "<{0} {1}>".format(self.__class__.__name__, self.name)
+
+    def clone(self):
+        return type(self)(self.name)
 
 class Send(Instruction):
     def __init__(self, value, to, block = None):
@@ -173,6 +192,10 @@ class Tuple(Instruction):
         super().__init__(block)
         self.set_operands(items)
 
+class FreePattern(Value):
+    def __init__(self):
+        super().__init__()
+
 class List(Instruction):
     def __init__(self, items, block = None):
         super().__init__(block)
@@ -197,17 +220,54 @@ class Constant(Value):
     def __repr__(self):
         return "<{0} {1}>".format(self.__class__.__name__, repr(self.value))
 
+    def clone(self):
+        return type(self)(self.value)
+
 class SubScript(Instruction):
     def __init__(self, value, subscript, block = None):
         super().__init__(block)
-        self.set_operands([value] + subscript)
+        self.set_operands([value, subscript])
 
     value = property(get_op_bind(0), set_op_bind(0))
+    subscript = property(get_op_bind(1), set_op_bind(1))
 
 class Set(Instruction):
     def __init__(self, items, block = None):
         super().__init__(block)
         self.set_operands(items)
+
+class IntegerSet(Instruction):
+    def __init__(self, start, end, block = None):
+        super().__init__(block)
+        self.set_operands([start, end])
+
+class Max(Instruction):
+    def __init__(self, item, block = None):
+        super().__init__(block)
+        self.set_operands(item)
+
+    value = property(get_op_bind(0), set_op_bind(0))
+
+class Min(Instruction):
+    def __init__(self, item, block = None):
+        super().__init__(block)
+        self.set_operands(item)
+
+    value = property(get_op_bind(0), set_op_bind(0))
+
+class SetComp(Instruction):
+    def __init__(self, elem, conditions, block = None):
+        super().__init__(block)
+        self.set_operands([elem] + conditions)
+
+    elem = property(get_op_bind(0), set_op_bind(0))
+
+    @property
+    def conditions(self):
+        return self.operands[1:]
+
+    def clone(self):
+        return type(self)(self.elem.clone(), [c.clone() for c in self.conditions])
 
 class Property(Instruction):
     def __init__(self, value, name, block = None):
@@ -218,14 +278,13 @@ class Property(Instruction):
     def __repr__(self):
         return "<{0} {1} [{2}]>".format(self.__class__.__name__, repr(self.name), self.repr_operands())
 
-class Received(Instruction):
-    def __init__(self, pattern, block = None):
-        super().__init__(block)
-        self.set_operands([pattern])
-    def __repr__(self):
-        return "<{0} {1}>".format(self.__class__.__name__, repr(self.pattern))
+class Received(Value):
+    def __init__(self):
+        super().__init__()
 
-    pattern = property(get_op_bind(0), set_op_bind(0))
+class Sent(Value):
+    def __init__(self):
+        super().__init__()
 
 class LogicOp(Instruction):
     def __init__(self, op, conds, block = None):
@@ -272,7 +331,7 @@ class Assign(Instruction):
     expr = property(get_op_bind(1), set_op_bind(1))
 
 class Call(Instruction):
-    def __init__(self, func, args, vargs, args2, kwargs, block = None):
+    def __init__(self, func, args, vargs, kwargs, block = None):
         super().__init__(block)
         ops = [func] + args
         if vargs is not None:
@@ -281,7 +340,6 @@ class Call(Instruction):
         else:
             self.vargs_idx = -1
 
-        ops += args2
         if kwargs is not None:
             self.kwargs_idx = len(ops)
             ops.append(kwargs)
@@ -291,6 +349,12 @@ class Call(Instruction):
         self.set_operands(ops)
 
     func = property(get_op_bind(0), set_op_bind(0))
+    @property
+    def args(self):
+        if self.vargs_idx > 0:
+            return self.operands[1:self.vargs_idx]
+        else:
+            return self.operands[1:]
 
 class CondBranch(Instruction):
     def __init__(self, cond, target_block, target_block2, block = None):
@@ -300,6 +364,15 @@ class CondBranch(Instruction):
     condition = property(get_op_bind(0), set_op_bind(0))
     target_block = property(get_op_bind(1), set_op_bind(1))
     target_block_alt = property(get_op_bind(2), set_op_bind(2))
+
+class IfElse(Instruction):
+    def __init__(self, cond, expr, elseexpr, block = None):
+        super().__init__(block)
+        self.set_operands([cond, expr, elseexpr])
+
+    condition = property(get_op_bind(0), set_op_bind(0))
+    expr = property(get_op_bind(1), set_op_bind(1))
+    elseexpr = property(get_op_bind(2), set_op_bind(2))
 
 class Branch(Instruction):
     def __init__(self, target_block, block = None):
@@ -343,16 +416,20 @@ class Cardinality(Instruction):
     def __init__(self, expr, block = None):
         super().__init__(block)
         self.set_operands([expr])
+    expr = property(get_op_bind(0), set_op_bind(0))
 
 class IsEmpty(Instruction):
     def __init__(self, expr, block = None):
         super().__init__(block)
         self.set_operands([expr])
+    expr = property(get_op_bind(0), set_op_bind(0))
 
 class Return(Instruction):
     def __init__(self, expr, block = None):
         super().__init__(block)
         self.set_operands([expr])
+
+    expr = property(get_op_bind(0), set_op_bind(0))
 
 class Function(Value):
     def __init__(self, module, ast_node, scope, args):
@@ -363,7 +440,7 @@ class Function(Value):
         self.basicblocks = []
         self.args = []
 
-    def remove_block(self, block_idx):
+    def remove_block_by_idx(self, block_idx):
         block = self.basicblocks.pop(block_idx)
         for pred in block.pred:
             pred.succ |= block.succ
@@ -372,6 +449,12 @@ class Function(Value):
             succ.pred |= block.pred
             succ.pred.remove(block)
         block.function = None
+
+    def remove_block(self, block):
+        for i, b in enumerate(self.basicblocks):
+            if b is block:
+                self.remove_block_by_idx(i)
+                return
 
     def __repr__(self):
         return "<{0} ({1} {2})>".format(self.__class__.__name__, self.ast_node.__class__.__name__,
@@ -433,6 +516,10 @@ class BasicBlock(Value):
         assert isinstance(function, Function) or function is None
         assert label is not None
 
+    def update_inst_parent(self):
+        for inst in self.ir:
+            inst.parent = self;
+
     def append_inst(self, inst):
         assert isinstance(inst, Instruction)
         self.ir.append(inst)
@@ -446,6 +533,16 @@ class BasicBlock(Value):
                 inst_to.parent = self
                 return
 
+    def insert_inst(self, inst, before):
+        for idx, i in enumerate(self.ir):
+            if i is before:
+                self.insert_inst_by_idx(inst, idx)
+                return
+
+    def insert_inst_by_idx(self, inst, idx):
+        self.ir.insert(idx, inst)
+        inst.parent = self
+
     def remove_inst(self, inst):
         self.ir.remove(inst)
 
@@ -453,6 +550,7 @@ class BasicBlock(Value):
         new_block = BasicBlock(self.function, self.label + "_s")
         new_block.ir = self.ir[idx+1:]
         self.ir = self.ir[0:idx+1]
+        new_block.update_inst_parent()
         return new_block
 
     def add_succ(self, b):
@@ -480,12 +578,12 @@ class Quantifier(Instruction):
     def __init__(self, op, domain, predicate, block=None):
         super().__init__(block)
         self.op = op
-        self.domain = domain
-        self.predicate = predicate
-        self.set_operands([domain, predicate])
+        self.set_operands([predicate] + domain)
 
     def __repr__(self):
-        return "<{0} {1} {2} has={3}>".format(self.__class__.__name__, self.op, self.domain, self.predicate)
+        return "<{0} {1} {2} has={3}>".format(self.__class__.__name__, self.op, self.operands[1:], self.predicate)
+
+    predicate = property(get_op_bind(0), set_op_bind(0))
 
 class IRName(Value):
     def __init__(self, name, origin_name, typ):
@@ -496,6 +594,9 @@ class IRName(Value):
 
     def __repr__(self):
         return "<{0} {1}>".format(self.__class__.__name__, self.name)
+
+    def clone(self):
+        return type(self)(self.name, self.origin_name, self.name_type)
 
 if __name__ == "__main__":
     parm1 = Constant(1)

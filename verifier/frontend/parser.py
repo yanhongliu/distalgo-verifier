@@ -1,7 +1,6 @@
-import re
 from ply import yacc
 from .lexer import Lexer
-from . import dast as ast
+from da.compiler import dast as ast
 
 class ParseError(Exception):
     def __init__(self, s, lineno):

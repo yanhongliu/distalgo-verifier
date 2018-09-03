@@ -1,4 +1,5 @@
 import collections
+from . import debug
 
 def iter_fields(node, _fields=None):
     """
@@ -58,7 +59,7 @@ class NodeVisitor(object):
         return None
 
     def visit_one_field(self, node, field):
-        self.visit_some_fields(self, node, [field])
+        self.visit_some_fields(node, [field])
 
     def visit_other_fields(self, node, fields):
         for field, value in iter_fields(node, [f for f in node._fields if f not in fields]):
@@ -74,21 +75,41 @@ class NodeDump(NodeVisitor):
         self.indent = 0
         self._nodebaseclass = baseclass
 
-    def visit(self, node):
+    def dump_visit(self, node, fields = None, attrs = None):
+        if node is None:
+            return node
+        if isinstance(node, str):
+            return node
+        elif isinstance(node, int):
+            return str(node)
+        elif isinstance(node, tuple):
+            return str(node)
         shortindstr = ("  " * (self.indent))
         indstr = ("  " * (self.indent + 1))
         self.indent += 2
-        print("%s%s:{" % (shortindstr, node.__class__.__name__))
-        for field, value in iter_fields(node):
-            if isinstance(value, str):
-                print("%s%s: %s" % (indstr, field, value))
-            else:
-                print("%s%s:" % (indstr, field))
-                self.visit_one_value(value)
-                # print("%s" % str(value))
-        print("%s}" % shortindstr)
+        debug("%s%s:{" % (shortindstr, node.__class__.__name__))
+        if hasattr(node, "_attributes"):
+            for field, value in iter_fields(node, node._attributes if attrs is None else attrs):
+                if isinstance(value, str):
+                    debug("%s%s: %s" % (indstr, field, value))
+                else:
+                    debug("%s%s:" % (indstr, field))
+                    self.visit_one_value(value)
+                    # debug("%s" % str(value))
+        if hasattr(node, "_fields"):
+            for field, value in iter_fields(node, fields):
+                if isinstance(value, str):
+                    debug("%s%s: %s" % (indstr, field, value))
+                else:
+                    debug("%s%s:" % (indstr, field))
+                    self.visit_one_value(value)
+                    # debug("%s" % str(value))
+        debug("%s}" % shortindstr)
 
         self.indent -= 2
+
+    def generic_visit(self, node):
+        self.dump_visit(node, None, None)
 
 class NodeTransformer(NodeVisitor):
 

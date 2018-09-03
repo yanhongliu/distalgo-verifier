@@ -80,32 +80,36 @@ def clock_expr():
     return apply_expr("clock", "self")
 
 def send_action(need_sent=True):
+    msg = TlaTupleExpr([TlaConstantExpr('sent'), TlaTupleExpr([clock_expr(), _("self"), _("proc")]), _("content")])
     exprs = [tla_eq(_("msgQueue'"), TlaFunctionCompositionExpr(_("proc"), _("process"),
                                                                TlaIfExpr(tla_in(_("proc"), _("dest")),
-                                                                         tla_append(apply_expr("msgQ", "proc"), _("msg")),
+                                                                         tla_append(apply_expr("msgQ", "proc"), msg),
                                                                          apply_expr("msgQ", "proc")))),
             ]
     if need_sent:
-        exprs.append(except_expr_helper("sent", tla_union(TlaApplyExpr(_("sent"), _("self")), TlaSetExpr([_("msg")]))))
+        msg = TlaTupleExpr([TlaConstantExpr('sent'), TlaTupleExpr([clock_expr(), _("proc"), _("self")]), _("content")])
+        exprs.append(except_expr_helper("sent", tla_union(TlaApplyExpr(_("sent"), _("self")), TlaSetCompositionExpr(msg, None, tla_in(_("proc"), _("dest"))))))
     return TlaDefinitionStmt(_("Send"),
                              [_("self"), _("content"), _("dest"), _("msgQ")],
-                             TlaLetExpr(TlaDefinitionStmt(_("msg"), [],
-                                                          TlaRecordCompositionExpr([
-                                                              TlaMap(_("timestamp"), clock_expr()),
-                                                              TlaMap(_("src"), _("self")),
-                                                              TlaMap(_("content"), _("content"))])),
-                                        tla_and(exprs)))
+                             tla_and(exprs))
 
 
 def yield_point_action(scope, expr, need_rcvd=True):
+    timestamp = TlaIndexExpr(TlaIndexExpr(_("msg"), TlaConstantExpr(2)), TlaConstantExpr(1))
     exprs = [except_expr_helper("clock", TlaBinaryExpr("+",
                                                        TlaConstantExpr(1),
-                                                       TlaIfExpr(tla_gt(TlaFieldExpr(_("msg"), _("timestamp")), _("@")),
-                                                                 TlaFieldExpr(_("msg"), _("timestamp")),
+                                                       TlaIfExpr(tla_gt(timestamp, _("@")),
+                                                                 timestamp,
                                                                  _("@")))),
              ]
     if need_rcvd:
-        exprs.append(except_expr_helper("rcvd", tla_union(apply_expr("rcvd", "self"), TlaSetExpr([TlaFieldExpr(_("msg"), _("content"))]))))
+        envelop = TlaIndexExpr(_("msg"), TlaConstantExpr(2))
+        new_envelop = TlaTupleExpr([TlaIndexExpr(envelop, TlaConstantExpr(1)),
+            TlaIndexExpr(envelop, TlaConstantExpr(3)),
+            TlaIndexExpr(envelop, TlaConstantExpr(2))])
+
+        rcvd_msg = TlaTupleExpr([TlaConstantExpr('rcvd'), new_envelop, TlaIndexExpr(_("msg"), TlaConstantExpr(3))])
+        exprs.append(except_expr_helper("rcvd", tla_union(apply_expr("rcvd", "self"), TlaSetExpr([rcvd_msg]))))
     exprs.append(expr)
     return TlaDefinitionStmt(_(scope.gen_name("yield")),
                              [_("self")],
